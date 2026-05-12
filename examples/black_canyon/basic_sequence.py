@@ -1,8 +1,7 @@
 """Basic Black Canyon control sequence.
 
 Connects, prints status, toggles channels and calibration, sweeps attenuation.
-Set SERVER_IP to your device's address (find it in your router's DHCP table
-or use the static IP printed on the unit).
+The unit advertises itself over mDNS as `ocp_bc.local`.
 """
 
 import time
@@ -10,7 +9,7 @@ import time
 from ocupoint_rf import BlackCanyonClient
 
 
-SERVER_IP = "192.168.1.28"
+SERVER_IP = "ocp_bc.local"
 
 
 def print_status(client: BlackCanyonClient) -> None:

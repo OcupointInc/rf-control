@@ -14,9 +14,6 @@ dependencies = [
     "protobuf>=4.25",
 ]
 
-[project.optional-dependencies]
-dev = ["protobuf>=4.25"]
-
 [tool.setuptools.packages.find]
 where = ["src"]
 

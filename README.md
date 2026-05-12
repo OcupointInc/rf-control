@@ -20,9 +20,20 @@ device](#adding-a-new-device) below).
 
 ## Install
 
+This project is managed with [uv](https://docs.astral.sh/uv/). To set up a
+development environment:
+
 ```bash
-pip install -e .
+uv sync
 ```
+
+That creates `.venv/` and installs the package in editable mode along with
+its dependencies pinned by `uv.lock`. Run anything inside the env via
+`uv run`, e.g. `uv run python examples/black_canyon/basic_sequence.py`.
+
+To consume this library from another project, add it as a dependency
+(`uv add ocupoint-rf-control` once published, or `uv add path/to/ocupoint-rf-control`
+for a local checkout). Plain `pip install -e .` also still works.
 
 The only runtime dependency is `protobuf` (>= 4.25). Generated `_pb2.py`
 modules are checked into the repo so end users don't need `protoc`
@@ -32,12 +43,16 @@ installed.
 
 ## Quick start
 
+Each device advertises itself over mDNS, so examples connect by hostname
+instead of IP: `ocp_bc.local`, `ocp_straps.local`, `ocp_whalepod.local`.
+You can still pass a raw IP if you prefer.
+
 ### Black Canyon
 
 ```python
 from ocupoint_rf import BlackCanyonClient
 
-with BlackCanyonClient("192.168.1.28") as bc:
+with BlackCanyonClient("ocp_bc.local") as bc:
     bc.set_channels_enabled(True)
     bc.set_calibration_enabled(False)
     bc.set_attenuation_db(10)
@@ -52,7 +67,7 @@ with BlackCanyonClient("192.168.1.28") as bc:
 from ocupoint_rf import StrapsClient
 from ocupoint_rf.straps import RfBand
 
-with StrapsClient("192.168.0.90") as s:
+with StrapsClient("ocp_straps.local") as s:
     s.set_channels_enabled(True)
     s.set_rf_band("RF_BAND_900_1800MHZ")   # name or RfBand.RF_BAND_900_1800MHZ
     s.set_frontend_attenuation_db(0)
@@ -66,14 +81,25 @@ with StrapsClient("192.168.0.90") as s:
     print(s.get_status())
 ```
 
-### Apply a JSON config
+### Whalepod
 
-```bash
-python examples/straps/run_config.py examples/straps/configs/RF_BAND_900_1800MHZ.json
+```python
+from ocupoint_rf import WhalepodClient
+
+with WhalepodClient("ocp_whalepod.local") as w:
+    w.set_channels_enabled(True)
+    w.set_attenuation_db(10)
+    print(w.get_status())
 ```
 
-Each config file lists `server_ip`, `server_port`, and a `commands` map that
-the runner translates into client calls.
+### Configure a Straps band
+
+```bash
+uv run python examples/straps/set_rf_band.py RF_BAND_900_1800MHZ
+```
+
+Edit `BAND`/`SERVER_IP` at the top of the script, or pass the band name as
+the first argument.
 
 ---
 
@@ -83,22 +109,30 @@ the runner translates into client calls.
 ocupoint-rf-control/
 ├── proto/                          authoritative .proto files (one per device)
 │   ├── black_canyon.proto
-│   └── straps.proto
+│   ├── straps.proto
+│   └── whalepod.proto
 ├── src/ocupoint_rf/
 │   ├── __init__.py                 re-exports the client classes
 │   ├── transport.py                socket + send/recv plumbing
 │   ├── _base.py                    BaseClient — connection lifecycle, _send helpers
 │   ├── black_canyon.py             BlackCanyonClient
 │   ├── straps.py                   StrapsClient + enum re-exports
+│   ├── whalepod.py                 WhalepodClient
 │   └── _generated/                 protoc output (checked in)
 │       ├── black_canyon_pb2.py
-│       └── straps_pb2.py
+│       ├── straps_pb2.py
+│       └── whalepod_pb2.py
 ├── examples/
 │   ├── black_canyon/basic_sequence.py
-│   └── straps/
-│       ├── basic_sequence.py
-│       ├── run_config.py
-│       └── configs/*.json
+│   ├── straps/
+│   │   ├── basic_sequence.py
+│   │   └── set_rf_band.py
+│   └── whalepod/basic_sequence.py
+├── test_data/                      bench captures, screenshots, raw data
+│   ├── black_canyon/
+│   ├── straps/
+│   └── whalepod/
+│       └── <capture>/README.md     + raw files & pictures
 ├── scripts/regen_proto.py          regenerate _pb2.py modules
 ├── pyproject.toml
 └── README.md
@@ -136,7 +170,7 @@ the wire are identical.
 ### Regenerating the Python bindings
 
 ```bash
-python scripts/regen_proto.py
+uv run python scripts/regen_proto.py
 ```
 
 Requires `protoc` on PATH. Output lands in `src/ocupoint_rf/_generated/`.
@@ -155,7 +189,7 @@ When you build a new Ethernet-controlled frontend, follow this recipe:
 
 2. **Regenerate Python bindings.**
    ```bash
-   python scripts/regen_proto.py
+   uv run python scripts/regen_proto.py
    ```
 
 3. **Add a client class.** Create `src/ocupoint_rf/<device>.py`:

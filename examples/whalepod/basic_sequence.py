@@ -1,7 +1,8 @@
 """Basic Whalepod control sequence.
 
 Same command surface as Black Canyon: toggle channels and calibration,
-sweep attenuation, print status. Set SERVER_IP to your device's address.
+sweep attenuation, print status. The unit advertises itself over mDNS
+as `ocp_whalepod.local`.
 """
 
 import time
@@ -9,7 +10,7 @@ import time
 from ocupoint_rf import WhalepodClient
 
 
-SERVER_IP = "192.168.1.30"
+SERVER_IP = "ocp_whalepod.local"
 
 
 def print_status(client: WhalepodClient) -> None:

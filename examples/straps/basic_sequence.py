@@ -1,7 +1,8 @@
 """Basic Straps control sequence.
 
 Walks through calibration, attenuation, every RF band, and a manual
-switch configuration. Set SERVER_IP to your device's address.
+switch configuration. The unit advertises itself over mDNS as
+`ocp_straps.local`.
 """
 
 import time
@@ -10,7 +11,7 @@ from ocupoint_rf import StrapsClient
 from ocupoint_rf.straps import RfBand, RfSwitchOption, MixerSwitchOption, IfSwitchOption
 
 
-SERVER_IP = "192.168.0.90"
+SERVER_IP = "ocp_straps.local"
 
 
 def print_status(client: StrapsClient) -> None:
