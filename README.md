@@ -108,6 +108,15 @@ Runnable scripts live under [`examples/`](examples/):
 
 ---
 
+## Hardware setup guides
+
+Per-device walkthroughs for unboxing, powering, and connecting an
+eval board live under [`docs/`](docs/):
+
+- [Whalepod eval board](docs/whalepod/README.md)
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
