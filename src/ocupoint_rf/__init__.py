@@ -8,11 +8,13 @@ response type. Devices share `transport.ProtoTransport` and inherit
 
 from .black_canyon import BlackCanyonClient
 from .straps import StrapsClient
+from .whalepod import WhalepodClient
 from .transport import ProtoTransport, TransportError
 
 __all__ = [
     "BlackCanyonClient",
     "StrapsClient",
+    "WhalepodClient",
     "ProtoTransport",
     "TransportError",
 ]

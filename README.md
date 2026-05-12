@@ -11,6 +11,7 @@ Supported devices today:
 
 - **Black Canyon** — 1U dual-system frontend (VHF + UHF), 8 channels each
 - **Straps** — banded LO frontend with switched signal path
+- **Whalepod** — shares the Black Canyon command surface
 
 Adding a new device follows a small, repeatable recipe (see [Adding a new
 device](#adding-a-new-device) below).
