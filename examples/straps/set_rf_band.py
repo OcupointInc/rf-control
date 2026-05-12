@@ -1,10 +1,9 @@
 """Configure a Straps frontend for a specific RF band.
 
-Replaces the old JSON-config-driven workflow with a plain Python script.
 Edit BAND below (or pass it as the first CLI arg) and run:
 
-    uv run python examples/straps/set_rf_band.py
-    uv run python examples/straps/set_rf_band.py RF_BAND_900_1800MHZ
+    python examples/straps/set_rf_band.py
+    python examples/straps/set_rf_band.py RF_BAND_900_1800MHZ
 
 Valid bands (from the proto):
     RF_BAND_10_900MHZ

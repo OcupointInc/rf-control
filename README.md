@@ -15,22 +15,23 @@ Supported devices:
 
 ## Install
 
-This project is managed with [uv](https://docs.astral.sh/uv/):
+The only runtime dependency is `protobuf` (>= 4.25). From a checkout
+of this repo:
 
 ```bash
-uv sync
+pip install -e .
 ```
 
-That creates `.venv/` and installs the package in editable mode along
-with its dependencies pinned by `uv.lock`. Run anything inside the env
-with `uv run`, e.g.
-`uv run python examples/black_canyon/basic_sequence.py`.
+Or, to add it as a dependency of another project (once published):
 
-To use the library from another project, add it as a dependency
-(`uv add ocupoint-rf-control` once published, or
-`uv add path/to/ocupoint-rf-control` for a local checkout). Plain
-`pip install -e .` also works. The only runtime dependency is
-`protobuf` (>= 4.25).
+```bash
+pip install ocupoint-rf-control
+```
+
+A [uv](https://docs.astral.sh/uv/) workflow is also supported — run
+`uv sync` to set up `.venv/` from the checked-in `uv.lock`, then
+prefix commands with `uv run`. Either toolchain works; pick whichever
+is easier in your environment.
 
 ---
 
@@ -88,7 +89,7 @@ with WhalepodClient("ocp_whalepod.local") as w:
 ### Configure a Straps band
 
 ```bash
-uv run python examples/straps/set_rf_band.py RF_BAND_900_1800MHZ
+python examples/straps/set_rf_band.py RF_BAND_900_1800MHZ
 ```
 
 Edit `BAND`/`SERVER_IP` at the top of the script, or pass the band
