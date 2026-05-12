@@ -114,6 +114,8 @@ Per-device walkthroughs for unboxing, powering, and connecting an
 eval board live under [`docs/`](docs/):
 
 - [Whalepod eval board](docs/whalepod/README.md)
+- [Reflashing the eval board firmware](docs/firmware/README.md) —
+  shared procedure for all devices; binaries in [`firmware/`](firmware/)
 
 ---
 

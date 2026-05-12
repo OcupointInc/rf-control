@@ -10,7 +10,7 @@ The unit advertises itself over mDNS as `ocp_whalepod.local`.
 from ocupoint_rf import WhalepodClient
 
 
-SERVER_IP = "ocp_whalepod.local"
+SERVER_IP = "172.16.22.30"
 
 
 def main() -> None:
