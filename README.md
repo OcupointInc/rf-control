@@ -22,12 +22,6 @@ of this repo:
 pip install -e .
 ```
 
-Or, to add it as a dependency of another project (once published):
-
-```bash
-pip install ocupoint-rf-control
-```
-
 A [uv](https://docs.astral.sh/uv/) workflow is also supported — run
 `uv sync` to set up `.venv/` from the checked-in `uv.lock`, then
 prefix commands with `uv run`. Either toolchain works; pick whichever
@@ -86,25 +80,32 @@ with WhalepodClient("ocp_whalepod.local") as w:
     print(w.get_status())
 ```
 
-### Configure a Straps band
-
-```bash
-python examples/straps/set_rf_band.py RF_BAND_900_1800MHZ
-```
-
-Edit `BAND`/`SERVER_IP` at the top of the script, or pass the band
-name as the first argument.
-
 ---
 
 ## Examples
 
-Runnable scripts live under [`examples/`](examples/):
+Runnable scripts live under [`examples/`](examples/). Edit
+`SERVER_IP` at the top of each script (or use the device's mDNS
+hostname), then run:
 
-- [`examples/black_canyon/basic_sequence.py`](examples/black_canyon/basic_sequence.py)
-- [`examples/straps/basic_sequence.py`](examples/straps/basic_sequence.py)
-- [`examples/straps/set_rf_band.py`](examples/straps/set_rf_band.py)
-- [`examples/whalepod/basic_sequence.py`](examples/whalepod/basic_sequence.py)
+### Black Canyon
+
+```bash
+python examples/black_canyon/basic_sequence.py
+```
+
+### Straps
+
+```bash
+python examples/straps/basic_sequence.py
+python examples/straps/set_rf_band.py RF_BAND_900_1800MHZ
+```
+
+### Whalepod
+
+```bash
+python examples/whalepod/basic_sequence.py
+```
 
 ---
 
