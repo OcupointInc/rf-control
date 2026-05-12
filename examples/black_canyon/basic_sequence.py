@@ -1,10 +1,10 @@
-"""Basic Black Canyon control sequence.
+"""Configure a Black Canyon unit for normal operation.
 
-Connects, prints status, toggles channels and calibration, sweeps attenuation.
+Applies the default operating state — channels enabled, calibration
+disabled, 0 dB attenuation — and prints back the resulting status.
+
 The unit advertises itself over mDNS as `ocp_bc.local`.
 """
-
-import time
 
 from ocupoint_rf import BlackCanyonClient
 
@@ -12,37 +12,18 @@ from ocupoint_rf import BlackCanyonClient
 SERVER_IP = "ocp_bc.local"
 
 
-def print_status(client: BlackCanyonClient) -> None:
-    s = client.get_status()
-    print(
-        f"  calibration_enabled={s.calibration_enabled}  "
-        f"attenuation_db={s.attenuation_db}  "
-        f"channels_enabled={s.channels_enabled}"
-    )
-
-
 def main() -> None:
     with BlackCanyonClient(SERVER_IP) as client:
-        print("Initial status:")
-        print_status(client)
+        client.set_calibration_enabled(False)
+        client.set_channels_enabled(True)
+        client.set_attenuation_db(0)
 
-        for enabled in (False, True):
-            print(f"\nChannels enabled = {enabled}")
-            client.set_channels_enabled(enabled)
-            time.sleep(0.5)
-            print_status(client)
-
-        for enabled in (True, False):
-            print(f"\nCalibration enabled = {enabled}")
-            client.set_calibration_enabled(enabled)
-            time.sleep(0.5)
-            print_status(client)
-
-        for db in (0, 10, 20, 30):
-            print(f"\nAttenuation = {db} dB")
-            client.set_attenuation_db(db)
-            time.sleep(0.5)
-            print_status(client)
+        s = client.get_status()
+        print(
+            f"calibration_enabled={s.calibration_enabled}  "
+            f"channels_enabled={s.channels_enabled}  "
+            f"attenuation_db={s.attenuation_db}"
+        )
 
 
 if __name__ == "__main__":
