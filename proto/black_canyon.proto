@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package ocupoint.black_canyon;
+
+// Wire-compatible with firmware that uses `package control;`.
+// Protobuf wire format depends only on field numbers and types,
+// not on package or message names.
+
+message SetCalibrationEnabledRequest {
+  bool enabled = 1;
+}
+
+message SetCalibrationEnabledResponse {}
+
+message SetChannelsEnabledRequest {
+  bool enabled = 1;
+}
+
+message SetChannelsEnabledResponse {}
+
+message SetAttenuationRequest {
+  int32 attenuation_db = 1;
+}
+
+message SetAttenuationResponse {}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  bool calibration_enabled = 1;
+  int32 attenuation_db = 2;
+  bool channels_enabled = 3;
+}
+
+message Packet {
+  oneof message_id {
+    SetCalibrationEnabledRequest set_cal_enabled_request = 1;
+    SetCalibrationEnabledResponse set_cal_enabled_response = 2;
+    SetAttenuationRequest set_attenuation_request = 3;
+    SetChannelsEnabledRequest set_channels_enabled_request = 4;
+    SetAttenuationResponse set_attenuation_response = 5;
+    SetChannelsEnabledResponse set_channels_enabled_response = 6;
+    GetStatusRequest get_status_request = 7;
+    GetStatusResponse get_status_response = 8;
+  }
+}

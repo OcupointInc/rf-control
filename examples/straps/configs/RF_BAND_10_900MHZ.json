@@ -1,0 +1,11 @@
+{
+  "server_ip": "192.168.0.90",
+  "server_port": 5000,
+  "commands": {
+    "set_channels_enabled": true,
+    "set_cal_enabled": false,
+    "set_frontend_attenuation": 0,
+    "set_rf_band": "RF_BAND_10_900MHZ",
+    "get_status": true
+  }
+}
