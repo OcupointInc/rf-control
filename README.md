@@ -27,8 +27,8 @@ the GitHub Releases page and run it.
    | Windows x86_64         | `rf-control-windows-amd64.exe`  |
    | Windows ARM64          | `rf-control-windows-arm64.exe`  |
 
-   The `.uf2` firmware images for each eval board are attached to the
-   same release — see
+   The `.uf2` firmware images for each eval board are tracked in
+   [`firmware/`](firmware/) — see
    [docs/firmware/README.md](docs/firmware/README.md) for the reflash
    procedure.
 
@@ -171,8 +171,8 @@ frame header (the W5500 TCP socket boundary is the message boundary).
 
 - [Whalepod eval board](docs/whalepod/README.md)
 - [Reflashing the eval board firmware](docs/firmware/README.md) —
-  shared procedure across all devices; `.uf2` files are attached to
-  each GitHub Release.
+  shared procedure across all devices; `.uf2` files live in
+  [`firmware/`](firmware/).
 
 ---
 

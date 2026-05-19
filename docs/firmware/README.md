@@ -24,16 +24,14 @@ drag-and-drop — no toolchain required on the host.
 
 ## Firmware binaries
 
-Download the `.uf2` for your device from the
-[latest release](https://github.com/OcupointInc/rf-control/releases/latest).
-Each release attaches one `.uf2` per device alongside the host CLI
-binaries — pick the file matching your board:
+The signed `.uf2` builds live in [`firmware/`](../../firmware/) at the
+repo root. Pick the one matching your device:
 
-| Device       | File               | mDNS hostname        |
-| ------------ | ------------------ | -------------------- |
-| Black Canyon | `black_canyon.uf2` | `ocp_bc.local`       |
-| Straps       | `straps.uf2`       | `ocp_straps.local`   |
-| Whalepod     | `whalepod.uf2`     | `ocp_whalepod.local` |
+| Device       | File                              | mDNS hostname           |
+| ------------ | --------------------------------- | ----------------------- |
+| Black Canyon | `firmware/black_canyon.uf2`       | `ocp_bc.local`          |
+| Straps       | `firmware/straps.uf2`             | `ocp_straps.local`      |
+| Whalepod     | `firmware/whalepod.uf2`           | `ocp_whalepod.local`    |
 
-The firmware source is maintained in a separate repo; only the built
-binaries are published as release assets here.
+The firmware source is not part of this repo — only the built
+binaries are tracked here.
