@@ -1,12 +1,15 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
-.venv/
-venv/
-.env
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
+# Build artifacts
+/control_tool
+/control_tool.exe
+/control_tool-*
+/dist/
+
+# Go
+*.test
+*.out
+vendor/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
