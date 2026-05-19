@@ -1,7 +1,7 @@
 # Build artifacts
-/control_tool
-/control_tool.exe
-/control_tool-*
+/rf-control
+/rf-control.exe
+/rf-control-*
 /dist/
 
 # Go

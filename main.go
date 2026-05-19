@@ -1,4 +1,4 @@
-// control_tool is a single-binary CLI for configuring the WIZnet Pico RF
+// rf-control is a single-binary CLI for configuring the WIZnet Pico RF
 // control board over either TCP or USB (CDC1). It mirrors the Python
 // config_tool.py and uses the same protobuf wire format.
 package main
@@ -500,13 +500,12 @@ func cmdSetIP(args []string) error {
 
 	req := &pb.Packet{MessageId: &pb.Packet_SaveConfigRequest{
 		SaveConfigRequest: &pb.SaveConfigRequest{
-			StaticIp:           ipBytes,
-			StaticGateway:      gwBytes,
-			StaticSubnet:       snBytes,
-			MdnsHostname:       host,
-			MacAddress:         cur.MacAddress,
-			SerialNumber:       cur.SerialNumber,
-			EnableGatewayCheck: cur.EnableGatewayCheck,
+			StaticIp:      ipBytes,
+			StaticGateway: gwBytes,
+			StaticSubnet:  snBytes,
+			MdnsHostname:  host,
+			MacAddress:    cur.MacAddress,
+			SerialNumber:  cur.SerialNumber,
 		},
 	}}
 
@@ -746,11 +745,10 @@ func cmdApplyJSON(args []string) error {
 		return err
 	}
 	var data struct {
-		StaticIP           string `json:"static_ip"`
-		StaticGateway      string `json:"static_gateway"`
-		StaticSubnet       string `json:"static_subnet"`
-		Hostname           string `json:"hostname"`
-		EnableGatewayCheck bool   `json:"enable_gateway_check"`
+		StaticIP      string `json:"static_ip"`
+		StaticGateway string `json:"static_gateway"`
+		StaticSubnet  string `json:"static_subnet"`
+		Hostname      string `json:"hostname"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return err
@@ -784,18 +782,16 @@ func cmdApplyJSON(args []string) error {
 		return err
 	}
 
-	fmt.Printf("Applying config: IP=%s, Host=%s, GW_Check=%v\n",
-		data.StaticIP, data.Hostname, data.EnableGatewayCheck)
+	fmt.Printf("Applying config: IP=%s, Host=%s\n", data.StaticIP, data.Hostname)
 
 	req := &pb.Packet{MessageId: &pb.Packet_SaveConfigRequest{
 		SaveConfigRequest: &pb.SaveConfigRequest{
-			StaticIp:           ipBytes,
-			StaticGateway:      gwBytes,
-			StaticSubnet:       snBytes,
-			MdnsHostname:       data.Hostname,
-			MacAddress:         cur.MacAddress,
-			SerialNumber:       cur.SerialNumber,
-			EnableGatewayCheck: data.EnableGatewayCheck,
+			StaticIp:      ipBytes,
+			StaticGateway: gwBytes,
+			StaticSubnet:  snBytes,
+			MdnsHostname:  data.Hostname,
+			MacAddress:    cur.MacAddress,
+			SerialNumber:  cur.SerialNumber,
 		},
 	}}
 
@@ -817,7 +813,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `WIZnet Pico RF control tool
 
 Usage:
-  control_tool [--usb /dev/ttyACM1 | --ip 172.16.22.30 --port 5000] <command> [args]
+  rf-control [--usb /dev/ttyACM1 | --ip 172.16.22.30 --port 5000] <command> [args]
 
 Commands:
   list                   Discover USB devices matching the firmware
@@ -827,9 +823,8 @@ Commands:
   get                    Print the current device configuration.
   set-ip [flags]         Change one or more of: --address, --gateway,
                          --subnet, --hostname. Preserves MAC + serial.
-  apply-json <file>      Apply a JSON config file (same schema as the
-                         Python tool: static_ip, static_gateway,
-                         static_subnet, hostname, enable_gateway_check).
+  apply-json <file>      Apply a JSON config file with fields:
+                         static_ip, static_gateway, static_subnet, hostname.
   status                 Print live RF status (channels, attenuation,
                          LO frequency, switch positions).
   set-att <dB>           Set frontend attenuation in dB (e.g. 10).

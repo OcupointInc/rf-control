@@ -6,34 +6,56 @@ either TCP (default port 5000) or the USB control channel on the
 second CDC interface — useful when the network side isn't reachable
 yet (fresh board, wrong static IP, no DHCP).
 
-No runtime dependencies. Download the binary for your platform and
-run it.
+No runtime dependencies. Download the binary for your platform from
+the GitHub Releases page and run it.
 
 ---
 
-## Install
+## Download
 
-Grab the binary for your platform from the
-[latest release](https://github.com/OcupointInc/rf-control/releases/latest):
+1. Open the
+   **[latest release](https://github.com/OcupointInc/rf-control/releases/latest)**
+   page.
+2. Under **Assets**, click the file matching your platform:
 
-| Platform               | File                              |
-| ---------------------- | --------------------------------- |
-| Linux x86_64           | `control_tool-linux-amd64`        |
-| Linux ARM64 (e.g. Pi)  | `control_tool-linux-arm64`        |
-| macOS Intel            | `control_tool-darwin-amd64`       |
-| macOS Apple Silicon    | `control_tool-darwin-arm64`       |
-| Windows x86_64         | `control_tool-windows-amd64.exe`  |
-| Windows ARM64          | `control_tool-windows-arm64.exe`  |
+   | Platform               | File                            |
+   | ---------------------- | ------------------------------- |
+   | Linux x86_64           | `rf-control-linux-amd64`        |
+   | Linux ARM64 (e.g. Pi)  | `rf-control-linux-arm64`        |
+   | macOS Intel            | `rf-control-darwin-amd64`       |
+   | macOS Apple Silicon    | `rf-control-darwin-arm64`       |
+   | Windows x86_64         | `rf-control-windows-amd64.exe`  |
+   | Windows ARM64          | `rf-control-windows-arm64.exe`  |
 
-On macOS and Linux, mark the file executable after download:
+   The `.uf2` firmware images for each eval board are attached to the
+   same release — see
+   [docs/firmware/README.md](docs/firmware/README.md) for the reflash
+   procedure.
 
-```bash
-chmod +x control_tool-*
-mv control_tool-* /usr/local/bin/control_tool   # optional
-```
+3. Make it runnable.
 
-On Windows, rename to `control_tool.exe` and run it from PowerShell or
-cmd.
+   **Linux / macOS** — mark it executable and (optionally) drop it on
+   your `PATH`:
+
+   ```bash
+   chmod +x rf-control-*
+   sudo mv rf-control-* /usr/local/bin/rf-control
+   ```
+
+   **macOS Gatekeeper** may block an unsigned binary the first time
+   you run it. Right-click the file in Finder → **Open** → confirm,
+   or run `xattr -d com.apple.quarantine rf-control-*` from a
+   terminal.
+
+   **Windows** — rename the download to `rf-control.exe` and run it
+   from PowerShell or `cmd`. SmartScreen may warn the first time;
+   click **More info → Run anyway**.
+
+4. Sanity check:
+
+   ```bash
+   rf-control help
+   ```
 
 ---
 
@@ -42,7 +64,7 @@ cmd.
 ### Find the device
 
 ```bash
-control_tool list
+rf-control list
 ```
 
 This enumerates USB-CDC serial ports that look like the firmware
@@ -53,10 +75,10 @@ is supplied, the TCP address is also probed.
 ### Read current configuration
 
 ```bash
-control_tool --usb /dev/ttyACM1 get          # Linux
-control_tool --usb /dev/cu.usbmodem101 get   # macOS
-control_tool --usb COM5 get                  # Windows
-control_tool --ip 192.168.1.50 get            # over the network
+rf-control --usb /dev/ttyACM1 get          # Linux
+rf-control --usb /dev/cu.usbmodem101 get   # macOS
+rf-control --usb COM5 get                  # Windows
+rf-control --ip 192.168.1.50 get            # over the network
 ```
 
 With no `--usb` or `--ip`, USB is auto-discovered.
@@ -64,13 +86,13 @@ With no `--usb` or `--ip`, USB is auto-discovered.
 ### Change just the IP (MAC, hostname, serial preserved)
 
 ```bash
-control_tool --usb /dev/ttyACM1 set-ip --address 192.168.1.50
+rf-control --usb /dev/ttyACM1 set-ip --address 192.168.1.50
 ```
 
 ### Change multiple network fields at once
 
 ```bash
-control_tool --usb /dev/ttyACM1 set-ip \
+rf-control --usb /dev/ttyACM1 set-ip \
     --address 192.168.1.50 --gateway 192.168.1.1 \
     --subnet 255.255.255.0 --hostname my-rf-box
 ```
@@ -78,28 +100,27 @@ control_tool --usb /dev/ttyACM1 set-ip \
 ### Apply a JSON config file
 
 ```bash
-control_tool --usb /dev/ttyACM1 apply-json example_config.json
+rf-control --usb /dev/ttyACM1 apply-json example_config.json
 ```
 
 The schema:
 
 ```json
 {
-  "static_ip":            "192.168.1.50",
-  "static_gateway":       "192.168.1.1",
-  "static_subnet":        "255.255.255.0",
-  "hostname":             "my-rf-box",
-  "enable_gateway_check": true
+  "static_ip":      "192.168.1.50",
+  "static_gateway": "192.168.1.1",
+  "static_subnet":  "255.255.255.0",
+  "hostname":       "my-rf-box"
 }
 ```
 
 ### RF control
 
 ```bash
-control_tool status                 # live RF status (channels, atten, LO, switches)
-control_tool set-channels on        # enable/disable all RF channels
-control_tool set-att 10             # frontend attenuation in dB
-control_tool set-cal-att 30         # calibration-path attenuation in dB
+rf-control status                 # live RF status (channels, atten, LO, switches)
+rf-control set-channels on        # enable/disable all RF channels
+rf-control set-att 10             # frontend attenuation in dB
+rf-control set-cal-att 30         # calibration-path attenuation in dB
 ```
 
 ---
@@ -150,7 +171,8 @@ frame header (the W5500 TCP socket boundary is the message boundary).
 
 - [Whalepod eval board](docs/whalepod/README.md)
 - [Reflashing the eval board firmware](docs/firmware/README.md) —
-  shared procedure for all devices; binaries in [`firmware/`](firmware/)
+  shared procedure across all devices; `.uf2` files are attached to
+  each GitHub Release.
 
 ---
 
@@ -159,15 +181,15 @@ frame header (the W5500 TCP socket boundary is the message boundary).
 You don't need to — releases are prebuilt — but if you want to:
 
 ```bash
-go build -o control_tool .
+go build -o rf-control .
 ```
 
 Cross-compile (pure Go, no cgo required):
 
 ```bash
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o control_tool.exe .
-GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -o control_tool-mac .
-GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -o control_tool-pi .
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o rf-control.exe .
+GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -o rf-control-mac .
+GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -o rf-control-pi .
 ```
 
 Releases are produced by `.github/workflows/release.yml`, which fires

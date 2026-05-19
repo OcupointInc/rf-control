@@ -55,14 +55,14 @@ The Whalepod talks over Ethernet on TCP port 5000.
 
 ## First control commands
 
-Download the `control_tool` binary for your platform (see the
+Download the `rf-control` binary for your platform (see the
 [top-level README](../../README.md#install)). Then bring the board
 into a known state and read it back:
 
 ```bash
-control_tool --ip ocp_whalepod.local set-channels on
-control_tool --ip ocp_whalepod.local set-att 0
-control_tool --ip ocp_whalepod.local status
+rf-control --ip ocp_whalepod.local set-channels on
+rf-control --ip ocp_whalepod.local set-att 0
+rf-control --ip ocp_whalepod.local status
 ```
 
 You should see something like:
@@ -80,8 +80,8 @@ plug a USB cable into the eval board's USB-C port and use the USB
 transport instead:
 
 ```bash
-control_tool list                          # find the right /dev/tty… or COM port
-control_tool --usb /dev/ttyACM1 status     # Linux example
+rf-control list                          # find the right /dev/tty… or COM port
+rf-control --usb /dev/ttyACM1 status     # Linux example
 ```
 
 ---
@@ -98,9 +98,9 @@ eval boards.
 
 **`ocp_whalepod.local` doesn't resolve.**
 Confirm the board has pulled a DHCP lease, or pass the raw IP:
-`control_tool --ip 192.168.1.50 status`. On Windows, install Apple's
+`rf-control --ip 192.168.1.50 status`. On Windows, install Apple's
 Bonjour Print Services to get mDNS resolution — or just skip mDNS and
-talk to the board over USB with `--usb COM5` (see `control_tool list`
+talk to the board over USB with `--usb COM5` (see `rf-control list`
 to find the right port).
 
 **Connection refused / timeout.**

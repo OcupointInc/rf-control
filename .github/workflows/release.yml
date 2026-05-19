@@ -19,22 +19,22 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            asset: control_tool-linux-amd64
+            asset: rf-control-linux-amd64
           - goos: linux
             goarch: arm64
-            asset: control_tool-linux-arm64
+            asset: rf-control-linux-arm64
           - goos: darwin
             goarch: amd64
-            asset: control_tool-darwin-amd64
+            asset: rf-control-darwin-amd64
           - goos: darwin
             goarch: arm64
-            asset: control_tool-darwin-arm64
+            asset: rf-control-darwin-arm64
           - goos: windows
             goarch: amd64
-            asset: control_tool-windows-amd64.exe
+            asset: rf-control-windows-amd64.exe
           - goos: windows
             goarch: arm64
-            asset: control_tool-windows-arm64.exe
+            asset: rf-control-windows-arm64.exe
     steps:
       - uses: actions/checkout@v4
 
