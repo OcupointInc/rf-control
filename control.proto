@@ -1,0 +1,151 @@
+syntax = "proto3";
+
+package control;
+
+option go_package = "github.com/OcupointInc/rf-control/internal/controlpb;controlpb";
+
+// Enums for each switch bank
+enum RfSwitchOption {
+  RF_SWITCH_OPTION_4GHZ_LPF = 0;
+  RF_SWITCH_OPTION_2GHZ_LPF = 1;
+}
+
+enum MixerSwitchOption {
+  MIXER_SWITCH_OPTION_MIXER = 0;
+  MIXER_SWITCH_OPTION_BYPASS = 1;
+}
+
+enum IfSwitchOption {
+  IF_SWITCH_OPTION_900MHZ_LPF = 0;
+  IF_SWITCH_OPTION_1_2GHZ_BANDPASS = 1;
+}
+
+// Enum for RF bands
+enum RfBand {
+  RF_BAND_10_900MHZ = 0;
+  RF_BAND_900_1800MHZ = 1;
+  RF_BAND_1800_2700MHZ = 2;
+  RF_BAND_2700_3600MHZ = 3;
+  RF_BAND_3600_4500MHZ = 4;
+}
+
+message SetPllFrequencyRequest {
+  int32 frequency_mhz = 1;
+}
+
+message SetRfBandRequest {
+  RfBand band = 1;
+}
+
+message SetSwitchesRequest {
+  RfSwitchOption rf_switch = 1;
+  MixerSwitchOption mixer_switch = 2;
+  IfSwitchOption if_switch = 3;
+}
+
+// Request messages
+message SetCalibrationEnabledRequest {
+  bool enabled = 1;
+}
+
+// Calibration source select (whalepod CAL_SEL line). The internal noise-source
+// amplifier is enabled by the firmware only when calibration mode is active AND
+// the internal source is selected.
+message SetCalSourceRequest {
+  bool internal = 1;  // false = external cal (CAL_SEL low), true = internal (high)
+}
+
+message SetChannelsEnabledRequest {
+  bool enabled = 1;
+}
+
+message SetAttenuationRequest {
+  int32 attenuation_db = 1;
+}
+
+
+// Response messages
+message SetCalibrationEnabledResponse {}
+
+message SetCalSourceResponse {}
+
+message SetAttenuationResponse {}
+
+message SetChannelsEnabledResponse {}
+
+message SetSwitchesResponse {}
+
+message SetPllFrequencyResponse {}
+
+message SetRfBandResponse {}
+
+message GetStatusRequest {}
+
+message SetCalAttenuationResponse {}
+
+message SetFrontendAttenuationResponse {}
+
+message SaveConfigRequest {
+  bytes static_ip = 1;
+  bytes static_gateway = 2;
+  bytes static_subnet = 3;
+  string mdns_hostname = 4;
+  bytes mac_address = 7;
+  string serial_number = 8;
+}
+
+message SaveConfigResponse {}
+
+message GetStatusResponse {
+  bool calibration_enabled = 1;
+  int32 attenuation_db = 2;
+  bool channels_enabled = 3;
+  int32 lo_frequency_mhz = 4;
+  RfSwitchOption rf_switch = 5;
+  MixerSwitchOption mixer_switch = 6;
+  IfSwitchOption if_switch = 7;
+  // Hardware variant: "whalepod", "bc", or "straps". Used by host tools to
+  // suppress fields that aren't physically present (the Whalepod has no
+  // switches or PLL, only attenuators).
+  string board_type = 8;
+}
+
+message GetConfigRequest {}
+
+message GetConfigResponse {
+  bytes static_ip = 1;
+  bytes static_gateway = 2;
+  bytes static_subnet = 3;
+  string mdns_hostname = 4;
+  string serial_number = 7;
+  bytes mac_address = 8;
+  string firmware_version = 9;
+}
+
+// Packet message with all request and response types
+message Packet {
+  oneof message_id {
+    SetCalibrationEnabledRequest set_cal_enabled_request = 1;
+    SetCalibrationEnabledResponse set_cal_enabled_response = 2;
+    SetAttenuationRequest set_frontend_attenuation_request = 3;
+    SetChannelsEnabledRequest set_channels_enabled_request = 4;
+    SetFrontendAttenuationResponse set_frontend_attenuation_response = 5;
+    SetChannelsEnabledResponse set_channels_enabled_response = 6;
+    GetStatusRequest get_status_request = 7;
+    GetStatusResponse get_status_response = 8;
+    SetSwitchesRequest set_switches_request = 9;
+    SetSwitchesResponse set_switches_response = 10;
+    SetPllFrequencyRequest set_pll_frequency_request = 11;
+    SetPllFrequencyResponse set_pll_frequency_response = 12;
+    SetRfBandRequest set_rf_band_request = 13;
+    SetRfBandResponse set_rf_band_response = 14;
+    SetAttenuationRequest set_cal_attenuation_request = 15;
+    SetCalAttenuationResponse set_cal_attenuation_response = 16;
+    SaveConfigRequest save_config_request = 17;
+    SaveConfigResponse save_config_response = 18;
+    GetConfigRequest get_config_request = 19;
+    GetConfigResponse get_config_response = 20;
+    SetCalSourceRequest set_cal_source_request = 27;
+    SetCalSourceResponse set_cal_source_response = 28;
+  }
+}

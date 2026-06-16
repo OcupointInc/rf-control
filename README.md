@@ -121,7 +121,13 @@ rf-control status                 # live RF status (channels, atten, LO, switche
 rf-control set-channels on        # enable/disable all RF channels
 rf-control set-att 10             # frontend attenuation in dB
 rf-control set-cal-att 30         # calibration-path attenuation in dB
+rf-control set-cal on             # enter/leave calibration mode (CAL_SW)
+rf-control set-cal-source internal  # whalepod cal source (CAL_SEL): internal|external
 ```
+
+On the Whalepod the internal noise-source amplifier only turns on when
+calibration mode is active *and* the internal source is selected, i.e.
+`set-cal on` together with `set-cal-source internal`.
 
 ---
 
@@ -136,6 +142,9 @@ status                 Print live RF status
 set-att <dB>           Set frontend attenuation
 set-cal-att <dB>       Set calibration attenuation
 set-channels <on|off>  Enable or disable the RF channels
+set-cal <on|off>       Enter/leave calibration mode (CAL_SW)
+set-cal-source <internal|external>
+                       Select the Whalepod calibration source (CAL_SEL)
 ```
 
 ## Transport selection

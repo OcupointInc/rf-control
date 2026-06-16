@@ -730,6 +730,87 @@ func cmdSetChannels(args []string) error {
 	return nil
 }
 
+func cmdSetCal(args []string) error {
+	fs := flag.NewFlagSet("set-cal", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return errors.New("usage: set-cal <on|off>")
+	}
+	on, err := parseOnOff(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	defer tx.close()
+
+	pkt := &pb.Packet{MessageId: &pb.Packet_SetCalEnabledRequest{
+		SetCalEnabledRequest: &pb.SetCalibrationEnabledRequest{Enabled: on},
+	}}
+	resp, err := tx.send(pkt)
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetCalEnabledResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	state := "OFF"
+	if on {
+		state = "ON"
+	}
+	fmt.Printf("OK (calibration = %s)\n", state)
+	return nil
+}
+
+func cmdSetCalSource(args []string) error {
+	fs := flag.NewFlagSet("set-cal-source", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return errors.New("usage: set-cal-source <internal|external>  (whalepod CAL_SEL)")
+	}
+	var internal bool
+	switch strings.ToLower(fs.Arg(0)) {
+	case "internal", "int", "noise", "on":
+		internal = true
+	case "external", "ext", "off":
+		internal = false
+	default:
+		return fmt.Errorf("invalid source %q: use internal or external", fs.Arg(0))
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	defer tx.close()
+
+	pkt := &pb.Packet{MessageId: &pb.Packet_SetCalSourceRequest{
+		SetCalSourceRequest: &pb.SetCalSourceRequest{Internal: internal},
+	}}
+	resp, err := tx.send(pkt)
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetCalSourceResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	src := "external"
+	if internal {
+		src = "internal"
+	}
+	fmt.Printf("OK (cal source = %s)\n", src)
+	return nil
+}
+
 func cmdApplyJSON(args []string) error {
 	fs := flag.NewFlagSet("apply-json", flag.ExitOnError)
 	common := &commonFlags{}
@@ -830,6 +911,12 @@ Commands:
   set-att <dB>           Set frontend attenuation in dB (e.g. 10).
   set-cal-att <dB>       Set calibration attenuation in dB.
   set-channels <on|off>  Enable or disable the RF channels.
+  set-cal <on|off>       Enter/leave calibration mode (CAL_SW). With the internal
+                         source selected this also turns on the noise-source amp.
+  set-cal-source <internal|external>
+                         Select the whalepod calibration source (CAL_SEL).
+                         The internal noise-source amp turns on only in cal
+                         mode with the internal source selected.
 
 Transport selection (place before the command):
   --usb DEVICE   Use that USB serial device, e.g. /dev/cu.usbmodem101.
@@ -898,6 +985,10 @@ func main() {
 		err = cmdSetCalAtt(rest)
 	case "set-channels":
 		err = cmdSetChannels(rest)
+	case "set-cal":
+		err = cmdSetCal(rest)
+	case "set-cal-source":
+		err = cmdSetCalSource(rest)
 	case "help", "-h", "--help":
 		usage()
 		return
