@@ -6,7 +6,7 @@ of the `rf-control` CLI) to drive a Whalepod board. It centers on the
 "change the values, then Write" pattern:
 
 ```go
-wp := client.NewWhalepod(tx)
+wp := client.NewWhalepod(client.NewTCPTransport("192.168.1.50", 5000))
 wp.Read()                    // load current channels/attenuation/cal state
 wp.CalSourceInternal = true
 wp.CalEnabled = true
@@ -31,10 +31,12 @@ The program:
 
 ## Run it
 
+Set the `deviceIP` constant at the top of [`main.go`](main.go) to your
+board's address (or pass `-ip` to override it), then:
+
 ```bash
-go run . --usb /dev/ttyACM1     # Linux; use /dev/cu.usbmodem101 on macOS
-go run . --ip 192.168.1.50      # or over the network
-go run .                        # or let it auto-discover the USB device
+go run .                    # uses the hard-coded deviceIP
+go run . -ip 192.168.1.51   # override for a different board
 ```
 
 See [`main.go`](main.go) for the full source, and the parent
