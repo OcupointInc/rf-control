@@ -7,7 +7,9 @@ second CDC interface — useful when the network side isn't reachable
 yet (fresh board, wrong static IP, no DHCP).
 
 No runtime dependencies. Download the binary for your platform from
-the GitHub Releases page and run it.
+the GitHub Releases page and run it. Prefer to drive a device from your
+own Go program instead? See
+[Using rf-control as a Go library](#using-rf-control-as-a-go-library).
 
 ---
 
@@ -173,6 +175,55 @@ payload, in both directions:
 
 `len` is little-endian. TCP transports use the raw protobuf with no
 frame header (the W5500 TCP socket boundary is the message boundary).
+
+---
+
+## Using rf-control as a Go library
+
+This CLI is a thin wrapper around a `client` package that you can import
+directly from your own Go program — a test harness or automated test bench,
+for example — instead of shelling out to the `rf-control` binary.
+
+```bash
+go get github.com/OcupointInc/rf-control/client
+```
+
+```go
+import "github.com/OcupointInc/rf-control/client"
+
+tx := client.NewTCPTransport("192.168.1.50", 5000) // or client.NewUSBTransport("/dev/ttyACM1")
+c := client.New(tx)
+defer c.Close()
+
+cfg, err := c.GetConfig()
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(cfg.SerialNumber)
+
+if err := c.SetAttenuation(10); err != nil {
+    log.Fatal(err)
+}
+```
+
+`Client` has one method per request the firmware supports today —
+`GetConfig`, `SaveConfig`, `GetStatus`, `SetAttenuation`, `SetCalAttenuation`,
+`SetChannelsEnabled`, `SetCalEnabled`, `SetCalSource` — each returning the
+typed protobuf response (or nothing but an error, for the setters) from
+`github.com/OcupointInc/rf-control/controlpb`. USB discovery helpers
+(`client.ListCandidatePorts`, `client.IsControlPort`,
+`client.DiscoverUSBPort`) are exported too, so you can replicate the CLI's
+`list`/auto-discovery behavior in your own code.
+
+`TCPTransport` retries connection-level errors internally (see its doc
+comment — the device's control port only has two listening sockets, so
+back-to-back fresh connections can occasionally race the accept path). You
+don't need to add your own retry loop on top.
+
+See [`client/client.go`](client/client.go) for the full API (`go doc
+github.com/OcupointInc/rf-control/client` once fetched) and
+[`examples/whalepod`](examples/whalepod) for a complete, runnable program
+that walks through a calibration measurement on a Whalepod board.
 
 ---
 

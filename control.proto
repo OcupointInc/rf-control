@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package control;
 
-option go_package = "github.com/OcupointInc/rf-control/internal/controlpb;controlpb";
+option go_package = "github.com/OcupointInc/rf-control/controlpb;controlpb";
 
 // Enums for each switch bank
 enum RfSwitchOption {

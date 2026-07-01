@@ -1759,7 +1759,7 @@ const file_control_proto_rawDesc = "" +
 	"\x13RF_BAND_900_1800MHZ\x10\x01\x12\x18\n" +
 	"\x14RF_BAND_1800_2700MHZ\x10\x02\x12\x18\n" +
 	"\x14RF_BAND_2700_3600MHZ\x10\x03\x12\x18\n" +
-	"\x14RF_BAND_3600_4500MHZ\x10\x04B@Z>github.com/OcupointInc/rf-control/internal/controlpb;controlpbb\x06proto3"
+	"\x14RF_BAND_3600_4500MHZ\x10\x04B7Z5github.com/OcupointInc/rf-control/controlpb;controlpbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
