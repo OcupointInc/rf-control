@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"os"
 	"strconv"
@@ -46,6 +47,16 @@ const (
 	tcpDialTimeout = 5 * time.Second
 	tcpReadTimeout = 5 * time.Second
 
+	// The device's control port only has two listening sockets, and each
+	// takes several of the device's main-loop iterations to cycle back to
+	// LISTEN after a connection closes. Back-to-back connections (a burst,
+	// or just fast sequential commands) can race that and get "connection
+	// refused" or "connection reset by peer" even though the device itself
+	// is healthy — a short retry clears it up. See rf-control-tcp-reconnect-race
+	// in project notes for the full writeup.
+	tcpMaxAttempts = 3
+	tcpRetryDelay  = 150 * time.Millisecond
+
 	// USB VID/PID of the firmware (see usb_descriptors.c). Surfaced in
 	// `list` output but identification is done by protocol probe — that
 	// avoids needing cgo for VID/PID enumeration on macOS.
@@ -65,7 +76,41 @@ type tcpTransport struct {
 	addr string
 }
 
+// send dials, sends one request, and reads one response, retrying on
+// connection-level errors (the device refusing or resetting a fresh
+// connection under a two-socket accept race — see tcpMaxAttempts above).
+// SaveConfigRequest is exempt: the device intentionally drops the response
+// and reboots after a save, and the caller already treats that as success,
+// so retrying it would just risk re-triggering the flash write.
 func (t *tcpTransport) send(p *pb.Packet) (*pb.Packet, error) {
+	attempts := tcpMaxAttempts
+	if _, isSaveConfig := p.MessageId.(*pb.Packet_SaveConfigRequest); isSaveConfig {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		resp, err := t.sendOnce(p)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt < attempts {
+			// Jitter spreads out retries from concurrent callers that all hit
+			// the race at once — without it they retry in lockstep and can
+			// keep colliding on the device's 2 listening sockets.
+			delay := tcpRetryDelay + time.Duration(rand.Int63n(int64(tcpRetryDelay)))
+			vlogf("TCP request failed (attempt %d/%d): %v — retrying in %v", attempt, attempts, err, delay)
+			time.Sleep(delay)
+		}
+	}
+	if attempts > 1 {
+		return nil, fmt.Errorf("after %d attempts: %w", attempts, lastErr)
+	}
+	return nil, lastErr
+}
+
+func (t *tcpTransport) sendOnce(p *pb.Packet) (*pb.Packet, error) {
 	conn, err := net.DialTimeout("tcp", t.addr, tcpDialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", t.addr, err)
