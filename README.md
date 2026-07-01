@@ -215,12 +215,31 @@ typed protobuf response (or nothing but an error, for the setters) from
 `client.DiscoverUSBPort`) are exported too, so you can replicate the CLI's
 `list`/auto-discovery behavior in your own code.
 
+For the "configure several things and apply" workflow there's a
+`client.Whalepod` settings object: set the fields, then `Write()` them all at
+once. Call `Read()` first to load the device's current state so you only
+change what you mean to.
+
+```go
+wp := client.NewWhalepod(tx)
+defer wp.Close()
+
+wp.Read()                    // load current channels/attenuation/cal state
+wp.CalSourceInternal = true
+wp.CalEnabled = true
+wp.CalAttenuation = 10
+if err := wp.Write(); err != nil {
+    log.Fatal(err)
+}
+```
+
 `TCPTransport` retries connection-level errors internally (see its doc
 comment — the device's control port only has two listening sockets, so
 back-to-back fresh connections can occasionally race the accept path). You
 don't need to add your own retry loop on top.
 
-See [`client/client.go`](client/client.go) for the full API (`go doc
+See [`client/client.go`](client/client.go) and
+[`client/whalepod.go`](client/whalepod.go) for the full API (`go doc
 github.com/OcupointInc/rf-control/client` once fetched) and
 [`examples/whalepod`](examples/whalepod) for a complete, runnable program
 that walks through a calibration measurement on a Whalepod board.

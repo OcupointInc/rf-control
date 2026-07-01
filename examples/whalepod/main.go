@@ -1,11 +1,10 @@
 // Command whalepod-example shows how to drive a Whalepod board directly
-// from Go, using the client package instead of the rf-control CLI.
+// from Go with the client package: build up a client.Whalepod, set the
+// fields you want, and Write() them to the device.
 //
-// It walks through a typical calibration measurement: read the current
-// config, put the board into calibration mode with the internal noise
-// source selected (the noise-source amp only turns on when both of those
-// are true), sweep the calibration attenuator, then restore the board to
-// its normal through-path state.
+// It runs a typical calibration sweep — enter calibration mode with the
+// internal noise source, step the calibration attenuator, then restore the
+// normal through path — reusing one Whalepod object throughout.
 //
 // Usage:
 //
@@ -31,50 +30,49 @@ func main() {
 	if err != nil {
 		log.Fatalf("connect: %v", err)
 	}
-	defer tx.Close()
 
-	c := client.New(tx)
+	wp := client.NewWhalepod(tx)
+	defer wp.Close()
 
-	cfg, err := c.GetConfig()
+	cfg, err := wp.GetConfig()
 	if err != nil {
 		log.Fatalf("get config: %v", err)
 	}
-	fmt.Printf("Connected to serial %s (firmware %s), IP %d.%d.%d.%d\n",
-		cfg.SerialNumber, cfg.FirmwareVersion,
-		cfg.StaticIp[0], cfg.StaticIp[1], cfg.StaticIp[2], cfg.StaticIp[3])
+	fmt.Printf("Connected to serial %s (firmware %s)\n", cfg.SerialNumber, cfg.FirmwareVersion)
 
-	printStatus(c, "Before calibration")
-
-	// Select the on-board noise source and enter calibration mode. Order
-	// doesn't matter — the amp only actually turns on once both are true —
-	// but setting the source first means status already reflects the final
-	// state as soon as SetCalEnabled(true) returns.
-	if err := c.SetCalSource(true /* internal */); err != nil {
-		log.Fatalf("set cal source: %v", err)
+	// Load the current channel/attenuation/cal-mode state so we only change
+	// what we mean to below (Write pushes every field).
+	if err := wp.Read(); err != nil {
+		log.Fatalf("read status: %v", err)
 	}
-	if err := c.SetCalEnabled(true); err != nil {
-		log.Fatalf("enable calibration mode: %v", err)
+
+	// Enter calibration mode with the internal noise source. The noise-source
+	// amp only turns on when cal mode and the internal source are both set.
+	wp.CalSourceInternal = true
+	wp.CalEnabled = true
+	wp.CalAttenuation = 0
+	if err := wp.Write(); err != nil {
+		log.Fatalf("apply calibration settings: %v", err)
 	}
-	// Give the noise-source amp a moment to settle before taking a reading.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // let the amp settle
 
-	printStatus(c, "Calibrating (internal noise source)")
-
-	fmt.Println("\nSweeping calibration attenuator 0 -> 20 dB:")
+	// Sweep the calibration attenuator: change the field, Write again.
+	fmt.Println("Sweeping calibration attenuator 0 -> 20 dB:")
 	for db := int32(0); db <= 20; db += 5 {
-		if err := c.SetCalAttenuation(db); err != nil {
+		wp.CalAttenuation = db
+		if err := wp.Write(); err != nil {
 			log.Fatalf("set cal attenuation %d dB: %v", db, err)
 		}
 		fmt.Printf("  cal attenuation = %2d dB (take your measurement here)\n", db)
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Always leave the board back in its normal through-path state — don't
-	// strand it in calibration mode if this program exits early.
-	if err := c.SetCalEnabled(false); err != nil {
-		log.Fatalf("disable calibration mode: %v", err)
+	// Restore the normal through path.
+	wp.CalEnabled = false
+	if err := wp.Write(); err != nil {
+		log.Fatalf("restore through path: %v", err)
 	}
-	printStatus(c, "After calibration (through path restored)")
+	fmt.Println("Done — calibration mode off, through path restored.")
 }
 
 func connect(usb, ip string) (client.Transport, error) {
@@ -91,15 +89,4 @@ func connect(usb, ip string) (client.Transport, error) {
 		fmt.Printf("[auto] using USB %s\n", port)
 		return client.NewUSBTransport(port)
 	}
-}
-
-func printStatus(c *client.Client, label string) {
-	s, err := c.GetStatus()
-	if err != nil {
-		log.Fatalf("get status: %v", err)
-	}
-	fmt.Printf("\n%s:\n", label)
-	fmt.Printf("  channels enabled    : %v\n", s.ChannelsEnabled)
-	fmt.Printf("  calibration enabled : %v\n", s.CalibrationEnabled)
-	fmt.Printf("  frontend atten (dB) : %d\n", s.AttenuationDb)
 }
