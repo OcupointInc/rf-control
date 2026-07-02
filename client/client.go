@@ -69,7 +69,21 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) send(p *pb.Packet) (*pb.Packet, error) {
-	return c.tx.Send(p)
+	resp, err := c.tx.Send(p)
+	if err != nil {
+		return nil, err
+	}
+	// The firmware replies with ErrorResponse when it can't handle a request
+	// (unknown/unsupported message id for this board, decode failure, ...).
+	// Surface it as a Go error rather than making every method report it as an
+	// "unexpected response type".
+	if e, ok := resp.MessageId.(*pb.Packet_ErrorResponse); ok {
+		if d := e.ErrorResponse.GetDetail(); d != "" {
+			return nil, fmt.Errorf("device error: %s (%s)", d, e.ErrorResponse.GetCode())
+		}
+		return nil, fmt.Errorf("device error: %s", e.ErrorResponse.GetCode())
+	}
+	return resp, nil
 }
 
 // GetConfig reads the device's persisted network configuration (IP,
@@ -195,6 +209,37 @@ func (c *Client) SetCalSource(internal bool) error {
 		return err
 	}
 	if _, ok := resp.MessageId.(*pb.Packet_SetCalSourceResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// SetSwitches sets the three RF-frontend switch banks (STRAPS board). Boards
+// without those switches (e.g. Whalepod) accept the request but it's a no-op.
+func (c *Client) SetSwitches(rf pb.RfSwitchOption, mixer pb.MixerSwitchOption, ifSw pb.IfSwitchOption) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetSwitchesRequest{
+		SetSwitchesRequest: &pb.SetSwitchesRequest{RfSwitch: rf, MixerSwitch: mixer, IfSwitch: ifSw},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetSwitchesResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// SetRfSwitchChannel routes the SP8T RF-switch board's common port to channel
+// (1..8); 0 selects the all-off / all-isolated state. Only meaningful on the
+// rf_switch board.
+func (c *Client) SetRfSwitchChannel(channel int32) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetRfSwitchChannelRequest{
+		SetRfSwitchChannelRequest: &pb.SetRfSwitchChannelRequest{Channel: channel},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetRfSwitchChannelResponse); !ok {
 		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
 	}
 	return nil
