@@ -6,12 +6,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -535,6 +537,339 @@ func cmdApplyJSON(args []string) error {
 	return nil
 }
 
+// ----- batch apply (stdin/stdout JSON) --------------------------------------
+//
+// The `apply` command is the machine-facing entry point: it reads one JSON
+// document (from stdin by default, or a file), opens the transport once,
+// applies every field that's present, then closes the transport and writes a
+// JSON result to stdout. It's the "call the binary from Python and set several
+// things at once" path — no need to parse human text or spawn a process per
+// setting.
+
+// batchConfig is the JSON document `apply` accepts. Every field is optional and
+// applied only when present, so a caller can set any subset of device state in
+// one shot. Pointer types let us tell "field omitted" apart from "field set to
+// zero/false" — the whole point, since channels_enabled=false must differ from
+// channels_enabled absent.
+type batchConfig struct {
+	AttenuationDb     *int          `json:"attenuation_db"`
+	CalAttenuationDb  *int          `json:"cal_attenuation_db"`
+	ChannelsEnabled   *bool         `json:"channels_enabled"`
+	CalEnabled        *bool         `json:"cal_enabled"`
+	CalSourceInternal *bool         `json:"cal_source_internal"`
+	RfSwitch          *enumField    `json:"rf_switch"`
+	MixerSwitch       *enumField    `json:"mixer_switch"`
+	IfSwitch          *enumField    `json:"if_switch"`
+	RfSwitchChannel   *int          `json:"rf_switch_channel"`
+	Network           *networkBatch `json:"network"`
+}
+
+// networkBatch mirrors the SaveConfigRequest network fields. Omitted fields are
+// backfilled from the device's current config, so a caller can change just the
+// IP without restating the gateway/subnet/hostname.
+type networkBatch struct {
+	StaticIP      string `json:"static_ip"`
+	StaticGateway string `json:"static_gateway"`
+	StaticSubnet  string `json:"static_subnet"`
+	Hostname      string `json:"hostname"`
+}
+
+// enumField holds a raw JSON scalar (a number or a string) for one of the
+// switch enums, resolved later against that enum's value map. Keeping it raw
+// until resolve() lets us accept the protobuf enum integer, its canonical name
+// (e.g. "RF_SWITCH_OPTION_2GHZ_LPF"), or a short friendly alias (e.g. "2ghz").
+type enumField struct{ raw json.RawMessage }
+
+func (e *enumField) UnmarshalJSON(b []byte) error {
+	e.raw = append([]byte(nil), b...)
+	return nil
+}
+
+func (e enumField) resolve(canonical map[string]int32, aliases map[string]int32) (int32, error) {
+	// Numeric form: the raw protobuf enum value.
+	var n int32
+	if err := json.Unmarshal(e.raw, &n); err == nil {
+		return n, nil
+	}
+	var s string
+	if err := json.Unmarshal(e.raw, &s); err != nil {
+		return 0, fmt.Errorf("expected a string or integer, got %s", string(e.raw))
+	}
+	if v, ok := canonical[strings.ToUpper(s)]; ok {
+		return v, nil
+	}
+	if v, ok := aliases[strings.ToLower(s)]; ok {
+		return v, nil
+	}
+	accepted := make([]string, 0, len(aliases))
+	for a := range aliases {
+		accepted = append(accepted, a)
+	}
+	sort.Strings(accepted)
+	return 0, fmt.Errorf("unknown value %q (accepted: %s, a canonical enum name, or an integer)", s, strings.Join(accepted, ", "))
+}
+
+// Friendly aliases for the switch enums, in addition to the canonical protobuf
+// names (RfSwitchOption_value etc.) and raw integers, which resolve() also
+// accepts.
+var (
+	rfSwitchAliases    = map[string]int32{"4ghz_lpf": 0, "4ghz": 0, "2ghz_lpf": 1, "2ghz": 1}
+	mixerSwitchAliases = map[string]int32{"mixer": 0, "bypass": 1}
+	ifSwitchAliases    = map[string]int32{"900mhz_lpf": 0, "900mhz": 0, "1_2ghz_bandpass": 1, "1_2ghz": 1, "1.2ghz": 1}
+)
+
+// applyResult is the JSON written to stdout by `apply`. `applied` lists the
+// operations that succeeded, in order; on failure `error`/`failed_at` describe
+// the first operation that failed (everything listed in `applied` still took
+// effect). `status` is a read-back of device state after applying, omitted when
+// a network change rebooted the device.
+type applyResult struct {
+	OK       bool        `json:"ok"`
+	Applied  []string    `json:"applied"`
+	Error    string      `json:"error,omitempty"`
+	FailedAt string      `json:"failed_at,omitempty"`
+	Rebooted bool        `json:"rebooted,omitempty"`
+	Status   *statusJSON `json:"status,omitempty"`
+}
+
+// statusJSON is the machine-readable form of GetStatusResponse. Switch enums
+// are rendered as their canonical names so the output round-trips back through
+// `apply` as input.
+type statusJSON struct {
+	BoardType          string `json:"board_type,omitempty"`
+	ChannelsEnabled    bool   `json:"channels_enabled"`
+	CalibrationEnabled bool   `json:"calibration_enabled"`
+	CalSourceInternal  bool   `json:"cal_source_internal"`
+	AttenuationDb      int32  `json:"attenuation_db"`
+	CalAttenuationDb   int32  `json:"cal_attenuation_db"`
+	LoFrequencyMhz     int32  `json:"lo_frequency_mhz"`
+	RfSwitch           string `json:"rf_switch"`
+	MixerSwitch        string `json:"mixer_switch"`
+	IfSwitch           string `json:"if_switch"`
+	RfSwitchChannel    int32  `json:"rf_switch_channel"`
+}
+
+func statusToJSON(s *pb.GetStatusResponse) *statusJSON {
+	return &statusJSON{
+		BoardType:          s.BoardType,
+		ChannelsEnabled:    s.ChannelsEnabled,
+		CalibrationEnabled: s.CalibrationEnabled,
+		CalSourceInternal:  s.CalSourceInternal,
+		AttenuationDb:      s.AttenuationDb,
+		CalAttenuationDb:   s.CalAttenuationDb,
+		LoFrequencyMhz:     s.LoFrequencyMhz,
+		RfSwitch:           s.RfSwitch.String(),
+		MixerSwitch:        s.MixerSwitch.String(),
+		IfSwitch:           s.IfSwitch.String(),
+		RfSwitchChannel:    s.RfSwitchChannel,
+	}
+}
+
+func cmdApply(args []string) error {
+	fs := flag.NewFlagSet("apply", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	// Input: stdin by default (the Python-from-a-pipe case), or a file path;
+	// "-" also means stdin.
+	var raw []byte
+	var err error
+	if fs.NArg() == 0 || fs.Arg(0) == "-" {
+		raw, err = io.ReadAll(os.Stdin)
+	} else {
+		raw, err = os.ReadFile(fs.Arg(0))
+	}
+	if err != nil {
+		return err
+	}
+
+	var cfg batchConfig
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields() // a typo'd key must fail loudly, not silently no-op on hardware
+	if err := dec.Decode(&cfg); err != nil {
+		return fmt.Errorf("parse JSON config: %w", err)
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+
+	result, applyErr := applyBatch(c, &cfg)
+
+	// Always emit the JSON result on stdout, success or failure, so a caller can
+	// read one machine-parseable object regardless of exit code. Diagnostics go
+	// to stderr (see makeTransport / verbose), keeping stdout clean JSON.
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(result)
+	return applyErr
+}
+
+// applyBatch applies each present field of cfg through c, in an order chosen so
+// dependent settings land correctly (cal source before cal enable; network last
+// because it reboots). It returns the result to serialize plus an error for the
+// process exit code — both describe the same outcome.
+func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
+	res := &applyResult{Applied: []string{}}
+	fail := func(field string, err error) (*applyResult, error) {
+		res.OK = false
+		res.Error = err.Error()
+		res.FailedAt = field
+		return res, fmt.Errorf("%s: %w", field, err)
+	}
+
+	// Switches (rf/mixer/if) go out as one firmware call that sets all three, so
+	// backfill any omitted ones from current status.
+	if cfg.RfSwitch != nil || cfg.MixerSwitch != nil || cfg.IfSwitch != nil {
+		st, err := c.GetStatus()
+		if err != nil {
+			return fail("switches", fmt.Errorf("read current switch state: %w", err))
+		}
+		rf, mixer, ifSw := st.RfSwitch, st.MixerSwitch, st.IfSwitch
+		if cfg.RfSwitch != nil {
+			v, err := cfg.RfSwitch.resolve(pb.RfSwitchOption_value, rfSwitchAliases)
+			if err != nil {
+				return fail("rf_switch", err)
+			}
+			rf = pb.RfSwitchOption(v)
+		}
+		if cfg.MixerSwitch != nil {
+			v, err := cfg.MixerSwitch.resolve(pb.MixerSwitchOption_value, mixerSwitchAliases)
+			if err != nil {
+				return fail("mixer_switch", err)
+			}
+			mixer = pb.MixerSwitchOption(v)
+		}
+		if cfg.IfSwitch != nil {
+			v, err := cfg.IfSwitch.resolve(pb.IfSwitchOption_value, ifSwitchAliases)
+			if err != nil {
+				return fail("if_switch", err)
+			}
+			ifSw = pb.IfSwitchOption(v)
+		}
+		if err := c.SetSwitches(rf, mixer, ifSw); err != nil {
+			return fail("switches", err)
+		}
+		res.Applied = append(res.Applied,
+			"rf_switch="+rf.String(), "mixer_switch="+mixer.String(), "if_switch="+ifSw.String())
+	}
+
+	if cfg.RfSwitchChannel != nil {
+		ch := *cfg.RfSwitchChannel
+		if ch < 0 || ch > 8 {
+			return fail("rf_switch_channel", fmt.Errorf("out of range %d (expected 0-8, 0 = all off)", ch))
+		}
+		if err := c.SetRfSwitchChannel(int32(ch)); err != nil {
+			return fail("rf_switch_channel", err)
+		}
+		res.Applied = append(res.Applied, fmt.Sprintf("rf_switch_channel=%d", ch))
+	}
+
+	if cfg.AttenuationDb != nil {
+		db := *cfg.AttenuationDb
+		if db < 0 || db > 255 {
+			return fail("attenuation_db", fmt.Errorf("out of range %d (expected 0-255)", db))
+		}
+		if err := c.SetAttenuation(int32(db)); err != nil {
+			return fail("attenuation_db", err)
+		}
+		res.Applied = append(res.Applied, fmt.Sprintf("attenuation_db=%d", db))
+	}
+
+	if cfg.CalAttenuationDb != nil {
+		db := *cfg.CalAttenuationDb
+		if db < 0 || db > 255 {
+			return fail("cal_attenuation_db", fmt.Errorf("out of range %d (expected 0-255)", db))
+		}
+		if err := c.SetCalAttenuation(int32(db)); err != nil {
+			return fail("cal_attenuation_db", err)
+		}
+		res.Applied = append(res.Applied, fmt.Sprintf("cal_attenuation_db=%d", db))
+	}
+
+	if cfg.ChannelsEnabled != nil {
+		if err := c.SetChannelsEnabled(*cfg.ChannelsEnabled); err != nil {
+			return fail("channels_enabled", err)
+		}
+		res.Applied = append(res.Applied, fmt.Sprintf("channels_enabled=%v", *cfg.ChannelsEnabled))
+	}
+
+	// Cal source before cal enable: on Whalepod the noise-source amp only turns
+	// on when cal mode is active AND the internal source is selected, so choose
+	// the source first, then flip the mode.
+	if cfg.CalSourceInternal != nil {
+		if err := c.SetCalSource(*cfg.CalSourceInternal); err != nil {
+			return fail("cal_source_internal", err)
+		}
+		res.Applied = append(res.Applied, fmt.Sprintf("cal_source_internal=%v", *cfg.CalSourceInternal))
+	}
+	if cfg.CalEnabled != nil {
+		if err := c.SetCalEnabled(*cfg.CalEnabled); err != nil {
+			return fail("cal_enabled", err)
+		}
+		res.Applied = append(res.Applied, fmt.Sprintf("cal_enabled=%v", *cfg.CalEnabled))
+	}
+
+	// Network last: SaveConfig reboots the device, so anything after it would
+	// race the reboot.
+	if cfg.Network != nil {
+		cur, err := c.GetConfig()
+		if err != nil {
+			return fail("network", fmt.Errorf("read current config: %w", err))
+		}
+		pick := func(override string, fallback []byte) ([]byte, error) {
+			if override == "" {
+				return fallback, nil
+			}
+			return parseIPv4(override)
+		}
+		ipB, err := pick(cfg.Network.StaticIP, cur.StaticIp)
+		if err != nil {
+			return fail("network.static_ip", err)
+		}
+		gwB, err := pick(cfg.Network.StaticGateway, cur.StaticGateway)
+		if err != nil {
+			return fail("network.static_gateway", err)
+		}
+		snB, err := pick(cfg.Network.StaticSubnet, cur.StaticSubnet)
+		if err != nil {
+			return fail("network.static_subnet", err)
+		}
+		host := cur.MdnsHostname
+		if cfg.Network.Hostname != "" {
+			host = cfg.Network.Hostname
+		}
+		if err := c.SaveConfig(&pb.SaveConfigRequest{
+			StaticIp:      ipB,
+			StaticGateway: gwB,
+			StaticSubnet:  snB,
+			MdnsHostname:  host,
+			MacAddress:    cur.MacAddress,
+			SerialNumber:  cur.SerialNumber,
+		}); err != nil {
+			return fail("network", err)
+		}
+		res.Applied = append(res.Applied,
+			"network.static_ip="+ipString(ipB), "network.hostname="+host)
+		res.Rebooted = true
+	}
+
+	res.OK = true
+	// Read back the resulting device state so the caller gets a confirmation of
+	// what's now set — unless a network change just rebooted the device, in
+	// which case it won't answer.
+	if !res.Rebooted {
+		if st, err := c.GetStatus(); err == nil {
+			res.Status = statusToJSON(st)
+		}
+	}
+	return res, nil
+}
+
 // ----- entry point -----------------------------------------------------------
 
 func usage() {
@@ -553,6 +888,16 @@ Commands:
                          --subnet, --hostname. Preserves MAC + serial.
   apply-json <file>      Apply a JSON config file with fields:
                          static_ip, static_gateway, static_subnet, hostname.
+  apply [file]           Read one JSON config (from stdin, or a file / "-")
+                         describing any subset of device state, open the
+                         transport once, apply it all, then print a JSON
+                         result to stdout. This is the command to call from
+                         Python/scripts. Fields (all optional):
+                           attenuation_db, cal_attenuation_db,
+                           channels_enabled, cal_enabled, cal_source_internal,
+                           rf_switch, mixer_switch, if_switch,
+                           rf_switch_channel, and a network{} block
+                           (static_ip, static_gateway, static_subnet, hostname).
   status                 Print live RF status (channels, attenuation,
                          LO frequency, switch positions).
   set-att <dB>           Set frontend attenuation in dB (e.g. 10).
@@ -629,6 +974,8 @@ func main() {
 		err = cmdSetIP(rest)
 	case "apply-json":
 		err = cmdApplyJSON(rest)
+	case "apply":
+		err = cmdApply(rest)
 	case "status":
 		err = cmdStatus(rest)
 	case "set-att":

@@ -139,7 +139,9 @@ calibration mode is active *and* the internal source is selected, i.e.
 list                   Discover USB devices and probe TCP if --ip is set
 get                    Print the current device configuration
 set-ip [flags]         Change --address, --gateway, --subnet, --hostname
-apply-json <file>      Apply a JSON config file
+apply-json <file>      Apply a JSON network config file
+apply [file]           Apply a full-device JSON config from stdin (or a file)
+                       and print a JSON result — the command to call from Python
 status                 Print live RF status
 set-att <dB>           Set frontend attenuation
 set-cal-att <dB>       Set calibration attenuation
@@ -177,6 +179,88 @@ payload, in both directions:
 frame header (the W5500 TCP socket boundary is the message boundary).
 
 ---
+
+## Driving it from Python (JSON over stdin/stdout)
+
+If you just want the binary and don't want to write Go, the `apply` command is
+the machine interface. Feed it **one JSON document** describing any subset of
+device state; it opens the transport once, applies every field present (in a
+safe order), closes the transport, and prints a JSON result to stdout. Only
+`stdout` is JSON — diagnostics (auto-discovery notes, `-v` hex dumps) go to
+stderr, so parsing stdout is always clean.
+
+```bash
+echo '{
+  "attenuation_db": 10,
+  "channels_enabled": true,
+  "cal_enabled": true,
+  "cal_source_internal": true
+}' | rf-control --usb /dev/ttyACM1 apply
+```
+
+```jsonc
+// stdout:
+{
+  "ok": true,
+  "applied": ["channels_enabled=true", "attenuation_db=10", "cal_source_internal=true", "cal_enabled=true"],
+  "status": { "board_type": "whalepod", "channels_enabled": true, "attenuation_db": 10, ... }
+}
+```
+
+From Python — build the config, hand the process a transport flag, read one
+object back:
+
+```python
+import json, subprocess
+
+def apply(config, *, usb=None, ip=None):
+    transport = ["--usb", usb] if usb else ["--ip", ip]
+    p = subprocess.run(
+        ["rf-control", *transport, "apply"],
+        input=json.dumps(config), capture_output=True, text=True,
+    )
+    result = json.loads(p.stdout)      # {"ok": ..., "applied": [...], "status": {...}}
+    if not result["ok"]:
+        raise RuntimeError(f'{result["failed_at"]}: {result["error"]}')
+    return result
+
+apply({"attenuation_db": 10, "channels_enabled": True,
+       "cal_enabled": True, "cal_source_internal": True}, usb="/dev/ttyACM1")
+```
+
+`p.returncode` is non-zero on failure too, so you can branch on either that or
+`result["ok"]`.
+
+### Config fields
+
+All fields are optional; only the ones you include are touched.
+
+| Field                 | Type          | Notes                                                          |
+| --------------------- | ------------- | -------------------------------------------------------------- |
+| `attenuation_db`      | int 0–255     | Frontend attenuator                                            |
+| `cal_attenuation_db`  | int 0–255     | Calibration-path attenuator                                    |
+| `channels_enabled`    | bool          | Enable/disable all RF channels                                 |
+| `cal_enabled`         | bool          | Enter/leave calibration mode (CAL_SW)                          |
+| `cal_source_internal` | bool          | Whalepod CAL_SEL: `true` = internal noise source, `false` = ext |
+| `rf_switch`           | string or int | `"4ghz"`/`"2ghz"`, a canonical enum name, or the raw int       |
+| `mixer_switch`        | string or int | `"mixer"`/`"bypass"`                                            |
+| `if_switch`           | string or int | `"900mhz"`/`"1_2ghz"`                                           |
+| `rf_switch_channel`   | int 0–8       | SP8T RF-switch board; 0 = all off                              |
+| `network`             | object        | `static_ip`, `static_gateway`, `static_subnet`, `hostname`     |
+
+Notes:
+
+- Fields are applied in a fixed, dependency-safe order regardless of key order
+  in the JSON: switches → attenuators → channels → cal source → cal enable →
+  network. `cal_source_internal` is set before `cal_enabled` so the Whalepod
+  noise-source amp gating is correct.
+- A `network` block reboots the device (it's a flash write), so it's applied
+  last and the result reports `"rebooted": true` with no `status` read-back.
+  Omitted `network` sub-fields are preserved from the device's current config.
+- An unknown JSON key is an error, not a silent no-op — a typo like
+  `attenuaton_db` fails loudly rather than leaving the hardware half-configured.
+- On failure the result is `{"ok": false, "error": "...", "failed_at": "<field>",
+  "applied": [...]}`; everything listed in `applied` already took effect.
 
 ## Using rf-control as a Go library
 
