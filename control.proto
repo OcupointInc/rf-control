@@ -1,3 +1,14 @@
+// control.proto — SYNCED copy of the RF-instrument firmware control protocol.
+//
+// The CANONICAL definition lives in the firmware repo
+// (github.com/OcupointInc/wiznet-ethernet-firmware, examples/dhcp_dns/control.proto).
+// This copy exists so the rf-control Go library can generate its own bindings;
+// keep it byte-for-byte identical to the canonical file EXCEPT the go_package
+// line below. After syncing, regenerate the Go bindings:
+//
+//   protoc -I. --go_out=. --go_opt=module=github.com/OcupointInc/rf-control control.proto
+//
+// Do not hand-edit controlpb/control.pb.go.
 syntax = "proto3";
 
 package control;
@@ -27,6 +38,15 @@ enum RfBand {
   RF_BAND_1800_2700MHZ = 2;
   RF_BAND_2700_3600MHZ = 3;
   RF_BAND_3600_4500MHZ = 4;
+}
+
+// Reason a request could not be completed (see ErrorResponse).
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNSUPPORTED = 1;      // unknown message id, or a feature this board/firmware lacks
+  ERROR_CODE_DECODE_FAILED = 2;    // the request packet failed to decode
+  ERROR_CODE_INVALID_REQUEST = 3;  // arguments out of range / malformed
+  ERROR_CODE_HARDWARE_ERROR = 4;   // the underlying device operation failed
 }
 
 message SetPllFrequencyRequest {
@@ -63,6 +83,13 @@ message SetAttenuationRequest {
   int32 attenuation_db = 1;
 }
 
+// PE42582 SP8T switch board: select which channel (1..8) routes to the common
+// port. 0 (or any out-of-range value) puts the switch in the all-off /
+// all-isolated state. The matching front-panel LED tracks the selection.
+message SetRfSwitchChannelRequest {
+  int32 channel = 1;
+}
+
 
 // Response messages
 message SetCalibrationEnabledResponse {}
@@ -79,6 +106,8 @@ message SetPllFrequencyResponse {}
 
 message SetRfBandResponse {}
 
+message SetRfSwitchChannelResponse {}
+
 message GetStatusRequest {}
 
 message SetCalAttenuationResponse {}
@@ -90,6 +119,7 @@ message SaveConfigRequest {
   bytes static_gateway = 2;
   bytes static_subnet = 3;
   string mdns_hostname = 4;
+  bool enable_gateway_check = 6;
   bytes mac_address = 7;
   string serial_number = 8;
 }
@@ -104,10 +134,20 @@ message GetStatusResponse {
   RfSwitchOption rf_switch = 5;
   MixerSwitchOption mixer_switch = 6;
   IfSwitchOption if_switch = 7;
-  // Hardware variant: "whalepod", "bc", or "straps". Used by host tools to
-  // suppress fields that aren't physically present (the Whalepod has no
+  // Hardware variant: "whalepod", "bc", "straps", or "rf_switch". Used by host
+  // tools to suppress fields that aren't physically present (the Whalepod has no
   // switches or PLL, only attenuators).
   string board_type = 8;
+  // Currently selected SP8T channel (1..8, or 0 = all-off) on the rf_switch
+  // board. Meaningless on other variants.
+  int32 rf_switch_channel = 9;
+  // Whalepod calibration source: true = internal noise source (CAL_SEL high),
+  // false = external (CAL_SEL low). Meaningless on variants without CAL_SEL.
+  bool cal_source_internal = 10;
+  // Whalepod cal-path attenuator setting in dB (the value last written to the
+  // CAL_ATT attenuator). Distinct from attenuation_db, which is the frontend
+  // attenuator. Meaningless on variants without a cal attenuator.
+  int32 cal_attenuation_db = 11;
 }
 
 message GetConfigRequest {}
@@ -117,9 +157,39 @@ message GetConfigResponse {
   bytes static_gateway = 2;
   bytes static_subnet = 3;
   string mdns_hostname = 4;
+  bool enable_gateway_check = 6;
   string serial_number = 7;
   bytes mac_address = 8;
   string firmware_version = 9;
+}
+
+// EEPROM access (AT24C01D, 128 bytes). address/length are byte offsets into
+// the device; data is capped at the device size.
+message EepromReadRequest {
+  uint32 address = 1;
+  uint32 length = 2;
+}
+
+message EepromReadResponse {
+  uint32 address = 1;
+  bytes data = 2;
+}
+
+message EepromWriteRequest {
+  uint32 address = 1;
+  bytes data = 2;
+}
+
+message EepromWriteResponse {
+  bool success = 1;
+}
+
+// Generic error reply. Sent when the firmware cannot handle a request at all —
+// e.g. an unknown/unsupported message id, or a packet that failed to decode —
+// so the host gets a definite answer instead of blocking until it times out.
+message ErrorResponse {
+  ErrorCode code = 1;
+  string detail = 2;  // short human-readable context; may be empty
 }
 
 // Packet message with all request and response types
@@ -145,7 +215,14 @@ message Packet {
     SaveConfigResponse save_config_response = 18;
     GetConfigRequest get_config_request = 19;
     GetConfigResponse get_config_response = 20;
+    EepromReadRequest eeprom_read_request = 21;
+    EepromReadResponse eeprom_read_response = 22;
+    EepromWriteRequest eeprom_write_request = 23;
+    EepromWriteResponse eeprom_write_response = 24;
+    SetRfSwitchChannelRequest set_rf_switch_channel_request = 25;
+    SetRfSwitchChannelResponse set_rf_switch_channel_response = 26;
     SetCalSourceRequest set_cal_source_request = 27;
     SetCalSourceResponse set_cal_source_response = 28;
+    ErrorResponse error_response = 29;
   }
 }
