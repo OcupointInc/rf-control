@@ -240,6 +240,26 @@ func (c *Client) SetCalSource(internal bool) error {
 	return nil
 }
 
+// SetClockSource selects the STRAPS reference-clock source (SI53301 CLK_SEL):
+// internal = the on-board oscillator, external = an external reference. Boards
+// without a switchable clock accept the request but it's a no-op.
+//
+// NOTE: the firmware does not handle this request yet (see control.proto's
+// DIVERGENCE note); until the handler lands a device replies with a
+// *DeviceError of code UNSUPPORTED rather than switching the clock.
+func (c *Client) SetClockSource(internal bool) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetClockSourceRequest{
+		SetClockSourceRequest: &pb.SetClockSourceRequest{Internal: internal},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetClockSourceResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
 // SetSwitches sets the three RF-frontend switch banks (STRAPS board). Boards
 // without those switches (e.g. Whalepod) accept the request but it's a no-op.
 func (c *Client) SetSwitches(rf pb.RfSwitchOption, mixer pb.MixerSwitchOption, ifSw pb.IfSwitchOption) error {

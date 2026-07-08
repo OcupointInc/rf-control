@@ -125,6 +125,7 @@ rf-control set-att 10             # frontend attenuation in dB
 rf-control set-cal-att 30         # calibration-path attenuation in dB
 rf-control set-cal on             # enter/leave calibration mode (CAL_SW)
 rf-control set-cal-source internal  # whalepod cal source (CAL_SEL): internal|external
+rf-control set-clock internal     # STRAPS reference clock (SI53301 CLK_SEL): internal|external
 rf-control set-pll 3500            # tune the STRAPS LMX2595 LO, in MHz
 rf-control set-band 1800-2700     # STRAPS band preset: switches + LO in one shot
 ```
@@ -139,6 +140,13 @@ three switch banks *and* tunes the LO to that band in one firmware call.
 `set-band` accepts a frequency span (`10-900`, `900-1800`, `1800-2700`,
 `2700-3600`, `3600-4500`), a canonical `RF_BAND_*` name, or an integer 0-4.
 Boards without a PLL accept both requests but perform no tuning.
+
+`set-clock` selects the STRAPS reference-clock source (the SI53301 `CLK_SEL`
+line, on GP27 via a board mod): `internal` uses the on-board oscillator,
+`external` an external reference. **Firmware support is pending** — until the
+device firmware handles this request it replies `unsupported` (exit code 4), so
+the host side is in place ahead of the firmware handler. Set the clock before
+tuning the PLL, since it changes the LO's reference.
 
 ---
 
@@ -158,6 +166,9 @@ set-channels <on|off>  Enable or disable the RF channels
 set-cal <on|off>       Enter/leave calibration mode (CAL_SW)
 set-cal-source <internal|external>
                        Select the Whalepod calibration source (CAL_SEL)
+set-clock <internal|external>
+                       Select the STRAPS reference clock (SI53301 CLK_SEL)
+                       — firmware handler pending (replies unsupported for now)
 set-pll <MHz>          Tune the STRAPS LMX2595 LO
 set-band <band>        Apply a STRAPS band preset (switches + LO)
 ```
@@ -273,6 +284,7 @@ All fields are optional; only the ones you include are touched.
 | `channels_enabled`    | bool          | Enable/disable all RF channels                                 |
 | `cal_enabled`         | bool          | Enter/leave calibration mode (CAL_SW)                          |
 | `cal_source_internal` | bool          | Whalepod CAL_SEL: `true` = internal noise source, `false` = ext |
+| `clock_source_internal` | bool        | STRAPS CLK_SEL: `true` = internal oscillator, `false` = external ref (firmware handler pending) |
 | `rf_band`             | string or int | STRAPS band preset (sets switches + LO): a span like `"1800-2700"`, an `RF_BAND_*` name, or int 0–4 |
 | `rf_switch`           | string or int | `"4ghz"`/`"2ghz"`, a canonical enum name, or the raw int       |
 | `mixer_switch`        | string or int | `"mixer"`/`"bypass"`                                            |
@@ -328,9 +340,10 @@ if err := c.SetAttenuation(10); err != nil {
 
 `Client` has one method per request the firmware supports today —
 `GetConfig`, `SaveConfig`, `GetStatus`, `SetAttenuation`, `SetCalAttenuation`,
-`SetChannelsEnabled`, `SetCalEnabled`, `SetCalSource`, `SetSwitches`,
-`SetPllFrequency`, `SetRfBand`, `SetRfSwitchChannel` — each returning the
-typed protobuf response (or nothing but an error, for the setters) from
+`SetChannelsEnabled`, `SetCalEnabled`, `SetCalSource`, `SetClockSource`,
+`SetSwitches`, `SetPllFrequency`, `SetRfBand`, `SetRfSwitchChannel` — each
+returning the typed protobuf response (or nothing but an error, for the
+setters) from
 `github.com/OcupointInc/rf-control/controlpb`. USB discovery helpers
 (`client.ListCandidatePorts`, `client.IsControlPort`,
 `client.DiscoverUSBPort`) are exported too, so you can replicate the CLI's

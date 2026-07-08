@@ -502,6 +502,43 @@ func cmdSetCalSource(args []string) error {
 	return nil
 }
 
+func cmdSetClockSource(args []string) error {
+	fs := flag.NewFlagSet("set-clock", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return usagef("usage: set-clock <internal|external>  (STRAPS reference clock, SI53301 CLK_SEL)")
+	}
+	var internal bool
+	switch strings.ToLower(fs.Arg(0)) {
+	case "internal", "int", "onboard", "on":
+		internal = true
+	case "external", "ext", "ref", "off":
+		internal = false
+	default:
+		return usagef("invalid clock source %q: use internal or external", fs.Arg(0))
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+
+	if err := c.SetClockSource(internal); err != nil {
+		return err
+	}
+	src := "external"
+	if internal {
+		src = "internal"
+	}
+	fmt.Printf("OK (clock source = %s)\n", src)
+	return nil
+}
+
 func cmdSetPll(args []string) error {
 	fs := flag.NewFlagSet("set-pll", flag.ExitOnError)
 	common := &commonFlags{}
@@ -647,18 +684,19 @@ func cmdApplyJSON(args []string) error {
 // zero/false" — the whole point, since channels_enabled=false must differ from
 // channels_enabled absent.
 type batchConfig struct {
-	AttenuationDb     *int          `json:"attenuation_db"`
-	CalAttenuationDb  *int          `json:"cal_attenuation_db"`
-	ChannelsEnabled   *bool         `json:"channels_enabled"`
-	CalEnabled        *bool         `json:"cal_enabled"`
-	CalSourceInternal *bool         `json:"cal_source_internal"`
-	RfBand            *enumField    `json:"rf_band"`
-	RfSwitch          *enumField    `json:"rf_switch"`
-	MixerSwitch       *enumField    `json:"mixer_switch"`
-	IfSwitch          *enumField    `json:"if_switch"`
-	PllFrequencyMhz   *int          `json:"pll_frequency_mhz"`
-	RfSwitchChannel   *int          `json:"rf_switch_channel"`
-	Network           *networkBatch `json:"network"`
+	AttenuationDb       *int          `json:"attenuation_db"`
+	CalAttenuationDb    *int          `json:"cal_attenuation_db"`
+	ChannelsEnabled     *bool         `json:"channels_enabled"`
+	CalEnabled          *bool         `json:"cal_enabled"`
+	CalSourceInternal   *bool         `json:"cal_source_internal"`
+	ClockSourceInternal *bool         `json:"clock_source_internal"`
+	RfBand              *enumField    `json:"rf_band"`
+	RfSwitch            *enumField    `json:"rf_switch"`
+	MixerSwitch         *enumField    `json:"mixer_switch"`
+	IfSwitch            *enumField    `json:"if_switch"`
+	PllFrequencyMhz     *int          `json:"pll_frequency_mhz"`
+	RfSwitchChannel     *int          `json:"rf_switch_channel"`
+	Network             *networkBatch `json:"network"`
 }
 
 // networkBatch mirrors the SaveConfigRequest network fields. Omitted fields are
@@ -766,32 +804,34 @@ type applyResult struct {
 // are rendered as their canonical names so the output round-trips back through
 // `apply` as input.
 type statusJSON struct {
-	BoardType          string `json:"board_type,omitempty"`
-	ChannelsEnabled    bool   `json:"channels_enabled"`
-	CalibrationEnabled bool   `json:"calibration_enabled"`
-	CalSourceInternal  bool   `json:"cal_source_internal"`
-	AttenuationDb      int32  `json:"attenuation_db"`
-	CalAttenuationDb   int32  `json:"cal_attenuation_db"`
-	LoFrequencyMhz     int32  `json:"lo_frequency_mhz"`
-	RfSwitch           string `json:"rf_switch"`
-	MixerSwitch        string `json:"mixer_switch"`
-	IfSwitch           string `json:"if_switch"`
-	RfSwitchChannel    int32  `json:"rf_switch_channel"`
+	BoardType           string `json:"board_type,omitempty"`
+	ChannelsEnabled     bool   `json:"channels_enabled"`
+	CalibrationEnabled  bool   `json:"calibration_enabled"`
+	CalSourceInternal   bool   `json:"cal_source_internal"`
+	ClockSourceInternal bool   `json:"clock_source_internal"`
+	AttenuationDb       int32  `json:"attenuation_db"`
+	CalAttenuationDb    int32  `json:"cal_attenuation_db"`
+	LoFrequencyMhz      int32  `json:"lo_frequency_mhz"`
+	RfSwitch            string `json:"rf_switch"`
+	MixerSwitch         string `json:"mixer_switch"`
+	IfSwitch            string `json:"if_switch"`
+	RfSwitchChannel     int32  `json:"rf_switch_channel"`
 }
 
 func statusToJSON(s *pb.GetStatusResponse) *statusJSON {
 	return &statusJSON{
-		BoardType:          s.BoardType,
-		ChannelsEnabled:    s.ChannelsEnabled,
-		CalibrationEnabled: s.CalibrationEnabled,
-		CalSourceInternal:  s.CalSourceInternal,
-		AttenuationDb:      s.AttenuationDb,
-		CalAttenuationDb:   s.CalAttenuationDb,
-		LoFrequencyMhz:     s.LoFrequencyMhz,
-		RfSwitch:           s.RfSwitch.String(),
-		MixerSwitch:        s.MixerSwitch.String(),
-		IfSwitch:           s.IfSwitch.String(),
-		RfSwitchChannel:    s.RfSwitchChannel,
+		BoardType:           s.BoardType,
+		ChannelsEnabled:     s.ChannelsEnabled,
+		CalibrationEnabled:  s.CalibrationEnabled,
+		CalSourceInternal:   s.CalSourceInternal,
+		ClockSourceInternal: s.ClockSourceInternal,
+		AttenuationDb:       s.AttenuationDb,
+		CalAttenuationDb:    s.CalAttenuationDb,
+		LoFrequencyMhz:      s.LoFrequencyMhz,
+		RfSwitch:            s.RfSwitch.String(),
+		MixerSwitch:         s.MixerSwitch.String(),
+		IfSwitch:            s.IfSwitch.String(),
+		RfSwitchChannel:     s.RfSwitchChannel,
 	}
 }
 
@@ -933,6 +973,15 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 	// the JSON result still reports the same field + message.
 	failInput := func(field string, err error) (*applyResult, error) {
 		return fail(field, &usageError{err: err})
+	}
+
+	// Clock source before anything PLL-related: it selects the LMX2595 reference,
+	// so the LO must be (re)tuned after it, not before.
+	if cfg.ClockSourceInternal != nil {
+		if err := c.SetClockSource(*cfg.ClockSourceInternal); err != nil {
+			return fail("clock_source_internal", err)
+		}
+		res.Applied = append(res.Applied, fmt.Sprintf("clock_source_internal=%v", *cfg.ClockSourceInternal))
 	}
 
 	// Band preset first: on STRAPS this sets all three switch banks AND tunes the
@@ -1135,10 +1184,10 @@ Commands:
                          Python/scripts. Fields (all optional):
                            attenuation_db, cal_attenuation_db,
                            channels_enabled, cal_enabled, cal_source_internal,
-                           rf_band, rf_switch, mixer_switch, if_switch,
-                           pll_frequency_mhz, rf_switch_channel, and a
-                           network{} block (static_ip, static_gateway,
-                           static_subnet, hostname).
+                           clock_source_internal, rf_band, rf_switch,
+                           mixer_switch, if_switch, pll_frequency_mhz,
+                           rf_switch_channel, and a network{} block (static_ip,
+                           static_gateway, static_subnet, hostname).
   status                 Print live RF status (channels, attenuation,
                          LO frequency, switch positions).
   set-att <dB>           Set frontend attenuation in dB (e.g. 10).
@@ -1150,6 +1199,9 @@ Commands:
                          Select the whalepod calibration source (CAL_SEL).
                          The internal noise-source amp turns on only in cal
                          mode with the internal source selected.
+  set-clock <internal|external>
+                         Select the STRAPS reference clock (SI53301 CLK_SEL):
+                         internal on-board oscillator vs external reference.
   set-pll <MHz>          Tune the STRAPS LMX2595 LO (e.g. 3500).
   set-band <band>        Apply a STRAPS band preset (switches + LO in one shot).
                          Accepts a span like 1800-2700, an RF_BAND_* name, or 0-4.
@@ -1239,6 +1291,8 @@ func main() {
 		err = cmdSetCal(rest)
 	case "set-cal-source":
 		err = cmdSetCalSource(rest)
+	case "set-clock":
+		err = cmdSetClockSource(rest)
 	case "set-pll":
 		err = cmdSetPll(rest)
 	case "set-band":

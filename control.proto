@@ -9,6 +9,13 @@
 //   protoc -I. --go_out=. --go_opt=module=github.com/OcupointInc/rf-control control.proto
 //
 // Do not hand-edit controlpb/control.pb.go.
+//
+// DIVERGENCE (pending firmware sync): SetClockSource (Packet tags 30/31) and
+// GetStatusResponse.clock_source_internal are defined here ahead of the
+// canonical firmware proto — the STRAPS internal/external reference-clock select
+// (SI53301 CLK_SEL, on GP27 via a board mod). The firmware does not handle it
+// yet, so a device replies ERROR_CODE_UNSUPPORTED until the handler lands; when
+// it does, mirror these additions into the canonical proto with the SAME tags.
 syntax = "proto3";
 
 package control;
@@ -75,6 +82,13 @@ message SetCalSourceRequest {
   bool internal = 1;  // false = external cal (CAL_SEL low), true = internal (high)
 }
 
+// STRAPS reference-clock source select (SI53301 CLK_SEL line, on GP27 via a
+// board mod). Selects whether the LMX2595 is fed by the on-board oscillator or
+// an external reference. No-op on boards without a switchable clock.
+message SetClockSourceRequest {
+  bool internal = 1;  // false = external clock, true = internal on-board oscillator
+}
+
 message SetChannelsEnabledRequest {
   bool enabled = 1;
 }
@@ -95,6 +109,8 @@ message SetRfSwitchChannelRequest {
 message SetCalibrationEnabledResponse {}
 
 message SetCalSourceResponse {}
+
+message SetClockSourceResponse {}
 
 message SetAttenuationResponse {}
 
@@ -148,6 +164,10 @@ message GetStatusResponse {
   // CAL_ATT attenuator). Distinct from attenuation_db, which is the frontend
   // attenuator. Meaningless on variants without a cal attenuator.
   int32 cal_attenuation_db = 11;
+  // STRAPS reference-clock source: true = internal on-board oscillator,
+  // false = external. Meaningless on variants without a switchable clock.
+  // (Firmware read-back pending — see the DIVERGENCE note at the top.)
+  bool clock_source_internal = 12;
 }
 
 message GetConfigRequest {}
@@ -224,5 +244,7 @@ message Packet {
     SetCalSourceRequest set_cal_source_request = 27;
     SetCalSourceResponse set_cal_source_response = 28;
     ErrorResponse error_response = 29;
+    SetClockSourceRequest set_clock_source_request = 30;
+    SetClockSourceResponse set_clock_source_response = 31;
   }
 }
