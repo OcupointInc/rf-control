@@ -68,20 +68,46 @@ func (c *Client) Close() error {
 	return c.tx.Close()
 }
 
+// DeviceError is returned when the firmware replies with an ErrorResponse
+// instead of the response the request asked for — i.e. it received and decoded
+// the request but refused it. Code is the firmware's machine-readable reason
+// (see controlpb.ErrorCode: unsupported message id for this board, decode
+// failure, invalid/out-of-range arguments, or a hardware fault); Detail is a
+// short human-readable note that may be empty. Callers can type-assert or use
+// errors.As to branch on Code programmatically.
+type DeviceError struct {
+	Code   pb.ErrorCode
+	Detail string
+}
+
+func (e *DeviceError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("device error: %s (%s)", e.Detail, e.Code)
+	}
+	return fmt.Sprintf("device error: %s", e.Code)
+}
+
+// TransportError wraps a wire-level failure — the device could not be reached,
+// the connection dropped, or a reply never arrived (dial refused, read timeout,
+// USB port gone). It's distinct from DeviceError, where the device did answer
+// but rejected the request. Use errors.As to distinguish "can't talk to the
+// device" from "the device said no".
+type TransportError struct{ Err error }
+
+func (e *TransportError) Error() string { return e.Err.Error() }
+func (e *TransportError) Unwrap() error { return e.Err }
+
 func (c *Client) send(p *pb.Packet) (*pb.Packet, error) {
 	resp, err := c.tx.Send(p)
 	if err != nil {
-		return nil, err
+		return nil, &TransportError{Err: err}
 	}
 	// The firmware replies with ErrorResponse when it can't handle a request
 	// (unknown/unsupported message id for this board, decode failure, ...).
-	// Surface it as a Go error rather than making every method report it as an
-	// "unexpected response type".
+	// Surface it as a typed DeviceError rather than making every method report
+	// it as an "unexpected response type".
 	if e, ok := resp.MessageId.(*pb.Packet_ErrorResponse); ok {
-		if d := e.ErrorResponse.GetDetail(); d != "" {
-			return nil, fmt.Errorf("device error: %s (%s)", d, e.ErrorResponse.GetCode())
-		}
-		return nil, fmt.Errorf("device error: %s", e.ErrorResponse.GetCode())
+		return nil, &DeviceError{Code: e.ErrorResponse.GetCode(), Detail: e.ErrorResponse.GetDetail()}
 	}
 	return resp, nil
 }
@@ -224,6 +250,39 @@ func (c *Client) SetSwitches(rf pb.RfSwitchOption, mixer pb.MixerSwitchOption, i
 		return err
 	}
 	if _, ok := resp.MessageId.(*pb.Packet_SetSwitchesResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// SetPllFrequency tunes the STRAPS board's LMX2595 LO to freqMHz. Only the
+// STRAPS board has a PLL; other boards accept the request and record the value
+// (reported back in GetStatus.LoFrequencyMhz) but perform no tuning.
+func (c *Client) SetPllFrequency(freqMHz int32) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetPllFrequencyRequest{
+		SetPllFrequencyRequest: &pb.SetPllFrequencyRequest{FrequencyMhz: freqMHz},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetPllFrequencyResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// SetRfBand selects a STRAPS band preset. On the STRAPS board the firmware
+// drives the three switch banks and tunes the LMX2595 to the LO for that band
+// in one shot; other boards accept the request but it's a no-op. Use SetSwitches
+// / SetPllFrequency instead when you need to set switches and LO independently.
+func (c *Client) SetRfBand(band pb.RfBand) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetRfBandRequest{
+		SetRfBandRequest: &pb.SetRfBandRequest{Band: band},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetRfBandResponse); !ok {
 		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
 	}
 	return nil

@@ -125,11 +125,20 @@ rf-control set-att 10             # frontend attenuation in dB
 rf-control set-cal-att 30         # calibration-path attenuation in dB
 rf-control set-cal on             # enter/leave calibration mode (CAL_SW)
 rf-control set-cal-source internal  # whalepod cal source (CAL_SEL): internal|external
+rf-control set-pll 3500            # tune the STRAPS LMX2595 LO, in MHz
+rf-control set-band 1800-2700     # STRAPS band preset: switches + LO in one shot
 ```
 
 On the Whalepod the internal noise-source amplifier only turns on when
 calibration mode is active *and* the internal source is selected, i.e.
 `set-cal on` together with `set-cal-source internal`.
+
+`set-pll` and `set-band` drive the STRAPS frontend's LMX2595 PLL: `set-pll`
+tunes the LO directly, while `set-band` applies a band preset that sets all
+three switch banks *and* tunes the LO to that band in one firmware call.
+`set-band` accepts a frequency span (`10-900`, `900-1800`, `1800-2700`,
+`2700-3600`, `3600-4500`), a canonical `RF_BAND_*` name, or an integer 0-4.
+Boards without a PLL accept both requests but perform no tuning.
 
 ---
 
@@ -149,7 +158,29 @@ set-channels <on|off>  Enable or disable the RF channels
 set-cal <on|off>       Enter/leave calibration mode (CAL_SW)
 set-cal-source <internal|external>
                        Select the Whalepod calibration source (CAL_SEL)
+set-pll <MHz>          Tune the STRAPS LMX2595 LO
+set-band <band>        Apply a STRAPS band preset (switches + LO)
 ```
+
+## Exit codes
+
+Every command exits with a code describing *why* it failed, so a script can tell
+an input mistake apart from a device or connection problem without scraping the
+message text. Bad input is also rejected up front — for `apply`, before the
+transport is even opened — so a typo never half-configures the hardware.
+
+```
+0  success
+1  unexpected internal error
+2  invalid input (unknown command, bad flag, or bad argument value)
+3  could not reach the device (connection refused, timeout, USB gone)
+4  the device received the request but rejected it (firmware ErrorCode printed)
+```
+
+Code 4 carries the firmware's machine-readable reason. When importing the Go
+`client` package directly, that reason is a typed `*client.DeviceError` (with a
+`Code` field) and an unreachable device is a `*client.TransportError` — use
+`errors.As` to branch on them.
 
 ## Transport selection
 
@@ -242,17 +273,22 @@ All fields are optional; only the ones you include are touched.
 | `channels_enabled`    | bool          | Enable/disable all RF channels                                 |
 | `cal_enabled`         | bool          | Enter/leave calibration mode (CAL_SW)                          |
 | `cal_source_internal` | bool          | Whalepod CAL_SEL: `true` = internal noise source, `false` = ext |
+| `rf_band`             | string or int | STRAPS band preset (sets switches + LO): a span like `"1800-2700"`, an `RF_BAND_*` name, or int 0–4 |
 | `rf_switch`           | string or int | `"4ghz"`/`"2ghz"`, a canonical enum name, or the raw int       |
 | `mixer_switch`        | string or int | `"mixer"`/`"bypass"`                                            |
 | `if_switch`           | string or int | `"900mhz"`/`"1_2ghz"`                                           |
+| `pll_frequency_mhz`   | int 0–15000   | STRAPS LMX2595 LO frequency in MHz                             |
 | `rf_switch_channel`   | int 0–8       | SP8T RF-switch board; 0 = all off                              |
 | `network`             | object        | `static_ip`, `static_gateway`, `static_subnet`, `hostname`     |
 
 Notes:
 
 - Fields are applied in a fixed, dependency-safe order regardless of key order
-  in the JSON: switches → attenuators → channels → cal source → cal enable →
-  network. `cal_source_internal` is set before `cal_enabled` so the Whalepod
+  in the JSON: band preset → switches → PLL → attenuators → channels → cal
+  source → cal enable → network. `rf_band` runs first (it presets switches and
+  the LO together) so an explicit `rf_switch`/`if_switch`/`pll_frequency_mhz` in
+  the same document overrides just that part of the preset.
+  `cal_source_internal` is set before `cal_enabled` so the Whalepod
   noise-source amp gating is correct.
 - A `network` block reboots the device (it's a flash write), so it's applied
   last and the result reports `"rebooted": true` with no `status` read-back.
@@ -292,7 +328,8 @@ if err := c.SetAttenuation(10); err != nil {
 
 `Client` has one method per request the firmware supports today —
 `GetConfig`, `SaveConfig`, `GetStatus`, `SetAttenuation`, `SetCalAttenuation`,
-`SetChannelsEnabled`, `SetCalEnabled`, `SetCalSource` — each returning the
+`SetChannelsEnabled`, `SetCalEnabled`, `SetCalSource`, `SetSwitches`,
+`SetPllFrequency`, `SetRfBand`, `SetRfSwitchChannel` — each returning the
 typed protobuf response (or nothing but an error, for the setters) from
 `github.com/OcupointInc/rf-control/controlpb`. USB discovery helpers
 (`client.ListCandidatePorts`, `client.IsControlPort`,

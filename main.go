@@ -31,6 +31,30 @@ func vlogf(format string, args ...any) {
 	}
 }
 
+// ----- exit codes ------------------------------------------------------------
+//
+// Distinct codes let a script (or a person) tell *why* a command failed without
+// scraping the message — in particular, whether the mistake was in the input
+// (fix your command) or on the device side (check the hardware/connection).
+const (
+	exitOK        = 0 // success
+	exitRuntime   = 1 // unexpected internal error
+	exitUsage     = 2 // invalid command-line input: unknown command, bad flag, or bad argument value
+	exitTransport = 3 // could not reach or talk to the device (connection refused, timeout, USB gone)
+	exitDevice    = 4 // the device received the request but rejected it (see the ErrorCode printed)
+)
+
+// usageError marks an error as caused by bad user input, so main() can exit with
+// exitUsage (and, for interactive commands, point the user at --help) instead of
+// treating it like an internal failure.
+type usageError struct{ err error }
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
+// usagef builds a usageError from a printf-style message.
+func usagef(format string, a ...any) error { return &usageError{err: fmt.Errorf(format, a...)} }
+
 // ----- transport selection ---------------------------------------------------
 
 type commonFlags struct {
@@ -39,7 +63,18 @@ type commonFlags struct {
 	usb  string
 }
 
+// makeTransport builds the transport selected by the flags. Any failure here is
+// a "can't reach the device" problem, so it's wrapped as a client.TransportError
+// (exit code exitTransport) rather than a generic error.
 func (c *commonFlags) makeTransport() (client.Transport, error) {
+	tx, err := c.makeTransportInner()
+	if err != nil {
+		return nil, &client.TransportError{Err: err}
+	}
+	return tx, nil
+}
+
+func (c *commonFlags) makeTransportInner() (client.Transport, error) {
 	// 1. Explicit USB path.
 	if c.usb != "" {
 		tx, err := client.NewUSBTransport(c.usb)
@@ -84,13 +119,13 @@ func addCommonFlags(fs *flag.FlagSet, c *commonFlags) {
 func parseIPv4(s string) ([]byte, error) {
 	parts := strings.Split(s, ".")
 	if len(parts) != 4 {
-		return nil, fmt.Errorf("not an IPv4 address: %q", s)
+		return nil, usagef("not an IPv4 address: %q", s)
 	}
 	out := make([]byte, 4)
 	for i, p := range parts {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 || n > 255 {
-			return nil, fmt.Errorf("not an IPv4 address: %q", s)
+			return nil, usagef("not an IPv4 address: %q", s)
 		}
 		out[i] = byte(n)
 	}
@@ -269,7 +304,7 @@ func parseOnOff(s string) (bool, error) {
 	case "off", "0", "false", "disable", "disabled", "no":
 		return false, nil
 	}
-	return false, fmt.Errorf("expected on/off (got %q)", s)
+	return false, usagef("expected on/off (got %q)", s)
 }
 
 func cmdStatus(args []string) error {
@@ -317,11 +352,11 @@ func cmdSetAtt(args []string) error {
 	_ = fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		return errors.New("usage: set-att <dB>  (e.g. set-att 10)")
+		return usagef("usage: set-att <dB>  (e.g. set-att 10)")
 	}
 	db, err := strconv.Atoi(fs.Arg(0))
 	if err != nil || db < 0 || db > 255 {
-		return fmt.Errorf("invalid attenuation %q (expected integer dB, 0-255)", fs.Arg(0))
+		return usagef("invalid attenuation %q (expected integer dB, 0-255)", fs.Arg(0))
 	}
 
 	tx, err := common.makeTransport()
@@ -345,11 +380,11 @@ func cmdSetCalAtt(args []string) error {
 	_ = fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		return errors.New("usage: set-cal-att <dB>")
+		return usagef("usage: set-cal-att <dB>")
 	}
 	db, err := strconv.Atoi(fs.Arg(0))
 	if err != nil || db < 0 || db > 255 {
-		return fmt.Errorf("invalid attenuation %q (expected integer dB, 0-255)", fs.Arg(0))
+		return usagef("invalid attenuation %q (expected integer dB, 0-255)", fs.Arg(0))
 	}
 
 	tx, err := common.makeTransport()
@@ -373,7 +408,7 @@ func cmdSetChannels(args []string) error {
 	_ = fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		return errors.New("usage: set-channels <on|off>")
+		return usagef("usage: set-channels <on|off>")
 	}
 	on, err := parseOnOff(fs.Arg(0))
 	if err != nil {
@@ -405,7 +440,7 @@ func cmdSetCal(args []string) error {
 	_ = fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		return errors.New("usage: set-cal <on|off>")
+		return usagef("usage: set-cal <on|off>")
 	}
 	on, err := parseOnOff(fs.Arg(0))
 	if err != nil {
@@ -437,7 +472,7 @@ func cmdSetCalSource(args []string) error {
 	_ = fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		return errors.New("usage: set-cal-source <internal|external>  (whalepod CAL_SEL)")
+		return usagef("usage: set-cal-source <internal|external>  (whalepod CAL_SEL)")
 	}
 	var internal bool
 	switch strings.ToLower(fs.Arg(0)) {
@@ -446,7 +481,7 @@ func cmdSetCalSource(args []string) error {
 	case "external", "ext", "off":
 		internal = false
 	default:
-		return fmt.Errorf("invalid source %q: use internal or external", fs.Arg(0))
+		return usagef("invalid source %q: use internal or external", fs.Arg(0))
 	}
 
 	tx, err := common.makeTransport()
@@ -467,6 +502,66 @@ func cmdSetCalSource(args []string) error {
 	return nil
 }
 
+func cmdSetPll(args []string) error {
+	fs := flag.NewFlagSet("set-pll", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return usagef("usage: set-pll <MHz>  (STRAPS LMX2595 LO; e.g. set-pll 3500)")
+	}
+	mhz, err := strconv.Atoi(fs.Arg(0))
+	if err != nil || mhz < 0 || mhz > 15000 {
+		return usagef("invalid frequency %q (expected integer MHz, 0-15000)", fs.Arg(0))
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+
+	if err := c.SetPllFrequency(int32(mhz)); err != nil {
+		return err
+	}
+	fmt.Printf("OK (PLL LO = %d MHz)\n", mhz)
+	return nil
+}
+
+func cmdSetBand(args []string) error {
+	fs := flag.NewFlagSet("set-band", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return usagef("usage: set-band <band>  (STRAPS band preset; accepts %s, a canonical RF_BAND_* name, or an integer 0-4)", strings.Join(rfBandAliasNames(), ", "))
+	}
+	v, err := resolveEnumArg(fs.Arg(0), pb.RfBand_value, rfBandAliases)
+	if err != nil {
+		return usagef("invalid band: %w", err)
+	}
+	if _, ok := pb.RfBand_name[v]; !ok {
+		return usagef("invalid band %d: out of range (expected an integer 0-4, a span like %s, or an RF_BAND_* name)", v, strings.Join(rfBandAliasNames(), "/"))
+	}
+	band := pb.RfBand(v)
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+
+	if err := c.SetRfBand(band); err != nil {
+		return err
+	}
+	fmt.Printf("OK (band = %s)\n", band)
+	return nil
+}
+
 func cmdApplyJSON(args []string) error {
 	fs := flag.NewFlagSet("apply-json", flag.ExitOnError)
 	common := &commonFlags{}
@@ -474,7 +569,7 @@ func cmdApplyJSON(args []string) error {
 	_ = fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		return errors.New("usage: apply-json <file>")
+		return usagef("usage: apply-json <file>")
 	}
 
 	raw, err := os.ReadFile(fs.Arg(0))
@@ -488,7 +583,7 @@ func cmdApplyJSON(args []string) error {
 		Hostname      string `json:"hostname"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return err
+		return usagef("parse %s: %v", fs.Arg(0), err)
 	}
 
 	tx, err := common.makeTransport()
@@ -557,9 +652,11 @@ type batchConfig struct {
 	ChannelsEnabled   *bool         `json:"channels_enabled"`
 	CalEnabled        *bool         `json:"cal_enabled"`
 	CalSourceInternal *bool         `json:"cal_source_internal"`
+	RfBand            *enumField    `json:"rf_band"`
 	RfSwitch          *enumField    `json:"rf_switch"`
 	MixerSwitch       *enumField    `json:"mixer_switch"`
 	IfSwitch          *enumField    `json:"if_switch"`
+	PllFrequencyMhz   *int          `json:"pll_frequency_mhz"`
 	RfSwitchChannel   *int          `json:"rf_switch_channel"`
 	Network           *networkBatch `json:"network"`
 }
@@ -609,6 +706,20 @@ func (e enumField) resolve(canonical map[string]int32, aliases map[string]int32)
 	return 0, fmt.Errorf("unknown value %q (accepted: %s, a canonical enum name, or an integer)", s, strings.Join(accepted, ", "))
 }
 
+// resolveEnumArg resolves a command-line enum argument — a canonical name, a
+// friendly alias, or a bare integer — to its protobuf value. Unlike quoting the
+// argument unconditionally, a bare integer is passed through as a JSON number so
+// the numeric form of resolve() accepts it (e.g. `set-band 2`).
+func resolveEnumArg(arg string, canonical, aliases map[string]int32) (int32, error) {
+	var raw json.RawMessage
+	if _, err := strconv.Atoi(arg); err == nil {
+		raw = json.RawMessage(arg) // bare integer -> JSON number
+	} else {
+		raw = json.RawMessage(strconv.Quote(arg)) // name/alias -> JSON string
+	}
+	return (&enumField{raw: raw}).resolve(canonical, aliases)
+}
+
 // Friendly aliases for the switch enums, in addition to the canonical protobuf
 // names (RfSwitchOption_value etc.) and raw integers, which resolve() also
 // accepts.
@@ -616,7 +727,26 @@ var (
 	rfSwitchAliases    = map[string]int32{"4ghz_lpf": 0, "4ghz": 0, "2ghz_lpf": 1, "2ghz": 1}
 	mixerSwitchAliases = map[string]int32{"mixer": 0, "bypass": 1}
 	ifSwitchAliases    = map[string]int32{"900mhz_lpf": 0, "900mhz": 0, "1_2ghz_bandpass": 1, "1_2ghz": 1, "1.2ghz": 1}
+	// STRAPS band presets (control.RfBand). Aliases are the band's frequency span
+	// in MHz; resolve() also accepts the canonical RF_BAND_* name or the integer.
+	rfBandAliases = map[string]int32{
+		"10-900": 0, "0-900": 0,
+		"900-1800":  1,
+		"1800-2700": 2,
+		"2700-3600": 3,
+		"3600-4500": 4,
+	}
 )
+
+// rfBandAliasNames returns the friendly band aliases, sorted, for help text.
+func rfBandAliasNames() []string {
+	names := make([]string, 0, len(rfBandAliases))
+	for a := range rfBandAliases {
+		names = append(names, a)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // applyResult is the JSON written to stdout by `apply`. `applied` lists the
 // operations that succeeded, in order; on failure `error`/`failed_at` describe
@@ -688,7 +818,12 @@ func cmdApply(args []string) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields() // a typo'd key must fail loudly, not silently no-op on hardware
 	if err := dec.Decode(&cfg); err != nil {
-		return fmt.Errorf("parse JSON config: %w", err)
+		return usagef("parse JSON config: %v", err)
+	}
+	// Reject bad values before opening the transport, so a typo'd config fails
+	// with a clear input error (exit 2) even when no device is connected.
+	if err := cfg.validate(); err != nil {
+		return err
 	}
 
 	tx, err := common.makeTransport()
@@ -709,6 +844,78 @@ func cmdApply(args []string) error {
 	return applyErr
 }
 
+// validate checks every statically-checkable field — enum values, numeric
+// ranges, IP formats — so a bad document is rejected up front, before the
+// transport is even opened, with a usageError (exit code exitUsage). This means
+// a typo'd value fails the same way whether or not a device is connected, and
+// never leaves the hardware half-configured. Fields that need live device state
+// (the switch backfill) are still handled in applyBatch.
+func (cfg *batchConfig) validate() error {
+	resolves := []struct {
+		field   string
+		f       *enumField
+		canon   map[string]int32
+		aliases map[string]int32
+		names   map[int32]string // valid resolved values, for a range check
+	}{
+		{"rf_band", cfg.RfBand, pb.RfBand_value, rfBandAliases, pb.RfBand_name},
+		{"rf_switch", cfg.RfSwitch, pb.RfSwitchOption_value, rfSwitchAliases, pb.RfSwitchOption_name},
+		{"mixer_switch", cfg.MixerSwitch, pb.MixerSwitchOption_value, mixerSwitchAliases, pb.MixerSwitchOption_name},
+		{"if_switch", cfg.IfSwitch, pb.IfSwitchOption_value, ifSwitchAliases, pb.IfSwitchOption_name},
+	}
+	for _, r := range resolves {
+		if r.f == nil {
+			continue
+		}
+		v, err := r.f.resolve(r.canon, r.aliases)
+		if err != nil {
+			return usagef("%s: %v", r.field, err)
+		}
+		// A bare integer resolves without error even when out of range; reject
+		// values that aren't a defined enum member.
+		if _, ok := r.names[v]; !ok {
+			return usagef("%s: %d is not a valid value", r.field, v)
+		}
+	}
+
+	ranges := []struct {
+		field  string
+		v      *int
+		lo, hi int
+		unit   string
+	}{
+		{"attenuation_db", cfg.AttenuationDb, 0, 255, ""},
+		{"cal_attenuation_db", cfg.CalAttenuationDb, 0, 255, ""},
+		{"pll_frequency_mhz", cfg.PllFrequencyMhz, 0, 15000, " MHz"},
+		{"rf_switch_channel", cfg.RfSwitchChannel, 0, 8, ""},
+	}
+	for _, r := range ranges {
+		if r.v == nil {
+			continue
+		}
+		if *r.v < r.lo || *r.v > r.hi {
+			return usagef("%s: out of range %d (expected %d-%d%s)", r.field, *r.v, r.lo, r.hi, r.unit)
+		}
+	}
+
+	if cfg.Network != nil {
+		ips := []struct{ field, val string }{
+			{"static_ip", cfg.Network.StaticIP},
+			{"static_gateway", cfg.Network.StaticGateway},
+			{"static_subnet", cfg.Network.StaticSubnet},
+		}
+		for _, ip := range ips {
+			if ip.val == "" {
+				continue
+			}
+			if _, err := parseIPv4(ip.val); err != nil {
+				return usagef("network.%s: %v", ip.field, err)
+			}
+		}
+	}
+	return nil
+}
+
 // applyBatch applies each present field of cfg through c, in an order chosen so
 // dependent settings land correctly (cal source before cal enable; network last
 // because it reboots). It returns the result to serialize plus an error for the
@@ -720,6 +927,27 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 		res.Error = err.Error()
 		res.FailedAt = field
 		return res, fmt.Errorf("%s: %w", field, err)
+	}
+	// failInput is fail for bad-input problems (unknown enum value, out-of-range
+	// number), so the CLI exits with exitUsage instead of a generic error while
+	// the JSON result still reports the same field + message.
+	failInput := func(field string, err error) (*applyResult, error) {
+		return fail(field, &usageError{err: err})
+	}
+
+	// Band preset first: on STRAPS this sets all three switch banks AND tunes the
+	// LO in one firmware call, so applying it before the individual switch / PLL
+	// fields lets those override the preset when a caller specifies both.
+	if cfg.RfBand != nil {
+		v, err := cfg.RfBand.resolve(pb.RfBand_value, rfBandAliases)
+		if err != nil {
+			return failInput("rf_band", err)
+		}
+		band := pb.RfBand(v)
+		if err := c.SetRfBand(band); err != nil {
+			return fail("rf_band", err)
+		}
+		res.Applied = append(res.Applied, "rf_band="+band.String())
 	}
 
 	// Switches (rf/mixer/if) go out as one firmware call that sets all three, so
@@ -733,21 +961,21 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 		if cfg.RfSwitch != nil {
 			v, err := cfg.RfSwitch.resolve(pb.RfSwitchOption_value, rfSwitchAliases)
 			if err != nil {
-				return fail("rf_switch", err)
+				return failInput("rf_switch", err)
 			}
 			rf = pb.RfSwitchOption(v)
 		}
 		if cfg.MixerSwitch != nil {
 			v, err := cfg.MixerSwitch.resolve(pb.MixerSwitchOption_value, mixerSwitchAliases)
 			if err != nil {
-				return fail("mixer_switch", err)
+				return failInput("mixer_switch", err)
 			}
 			mixer = pb.MixerSwitchOption(v)
 		}
 		if cfg.IfSwitch != nil {
 			v, err := cfg.IfSwitch.resolve(pb.IfSwitchOption_value, ifSwitchAliases)
 			if err != nil {
-				return fail("if_switch", err)
+				return failInput("if_switch", err)
 			}
 			ifSw = pb.IfSwitchOption(v)
 		}
@@ -758,10 +986,22 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 			"rf_switch="+rf.String(), "mixer_switch="+mixer.String(), "if_switch="+ifSw.String())
 	}
 
+	// PLL after switches/band so an explicit LO wins over a band preset's LO.
+	if cfg.PllFrequencyMhz != nil {
+		mhz := *cfg.PllFrequencyMhz
+		if mhz < 0 || mhz > 15000 {
+			return failInput("pll_frequency_mhz", fmt.Errorf("out of range %d (expected 0-15000 MHz)", mhz))
+		}
+		if err := c.SetPllFrequency(int32(mhz)); err != nil {
+			return fail("pll_frequency_mhz", err)
+		}
+		res.Applied = append(res.Applied, fmt.Sprintf("pll_frequency_mhz=%d", mhz))
+	}
+
 	if cfg.RfSwitchChannel != nil {
 		ch := *cfg.RfSwitchChannel
 		if ch < 0 || ch > 8 {
-			return fail("rf_switch_channel", fmt.Errorf("out of range %d (expected 0-8, 0 = all off)", ch))
+			return failInput("rf_switch_channel", fmt.Errorf("out of range %d (expected 0-8, 0 = all off)", ch))
 		}
 		if err := c.SetRfSwitchChannel(int32(ch)); err != nil {
 			return fail("rf_switch_channel", err)
@@ -772,7 +1012,7 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 	if cfg.AttenuationDb != nil {
 		db := *cfg.AttenuationDb
 		if db < 0 || db > 255 {
-			return fail("attenuation_db", fmt.Errorf("out of range %d (expected 0-255)", db))
+			return failInput("attenuation_db", fmt.Errorf("out of range %d (expected 0-255)", db))
 		}
 		if err := c.SetAttenuation(int32(db)); err != nil {
 			return fail("attenuation_db", err)
@@ -783,7 +1023,7 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 	if cfg.CalAttenuationDb != nil {
 		db := *cfg.CalAttenuationDb
 		if db < 0 || db > 255 {
-			return fail("cal_attenuation_db", fmt.Errorf("out of range %d (expected 0-255)", db))
+			return failInput("cal_attenuation_db", fmt.Errorf("out of range %d (expected 0-255)", db))
 		}
 		if err := c.SetCalAttenuation(int32(db)); err != nil {
 			return fail("cal_attenuation_db", err)
@@ -895,9 +1135,10 @@ Commands:
                          Python/scripts. Fields (all optional):
                            attenuation_db, cal_attenuation_db,
                            channels_enabled, cal_enabled, cal_source_internal,
-                           rf_switch, mixer_switch, if_switch,
-                           rf_switch_channel, and a network{} block
-                           (static_ip, static_gateway, static_subnet, hostname).
+                           rf_band, rf_switch, mixer_switch, if_switch,
+                           pll_frequency_mhz, rf_switch_channel, and a
+                           network{} block (static_ip, static_gateway,
+                           static_subnet, hostname).
   status                 Print live RF status (channels, attenuation,
                          LO frequency, switch positions).
   set-att <dB>           Set frontend attenuation in dB (e.g. 10).
@@ -909,6 +1150,9 @@ Commands:
                          Select the whalepod calibration source (CAL_SEL).
                          The internal noise-source amp turns on only in cal
                          mode with the internal source selected.
+  set-pll <MHz>          Tune the STRAPS LMX2595 LO (e.g. 3500).
+  set-band <band>        Apply a STRAPS band preset (switches + LO in one shot).
+                         Accepts a span like 1800-2700, an RF_BAND_* name, or 0-4.
 
 Transport selection (place before the command):
   --usb DEVICE   Use that USB serial device, e.g. /dev/cu.usbmodem101.
@@ -917,6 +1161,13 @@ Transport selection (place before the command):
                  the first one that replies to a GetConfigRequest is used.
                  Never falls back to TCP — pass --ip explicitly for that.
   --port PORT    TCP port (default 5000).
+
+Exit codes:
+  0  success
+  1  unexpected internal error
+  2  invalid input (unknown command, bad flag, or bad argument value)
+  3  could not reach the device (connection refused, timeout, USB gone)
+  4  the device received the request but rejected it (see the ErrorCode printed)
 
 This CLI is a thin wrapper around the client Go package in this repo
 (github.com/OcupointInc/rf-control/client) — import it directly if you want
@@ -931,7 +1182,7 @@ func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
 		usage()
-		os.Exit(2)
+		os.Exit(exitUsage)
 	}
 
 	// Boolean flags here don't consume the following token. Keep in sync with
@@ -956,7 +1207,7 @@ func main() {
 	}
 	if cmdIdx < 0 {
 		usage()
-		os.Exit(2)
+		os.Exit(exitUsage)
 	}
 
 	// Re-order: subcommand-name first, then all flags from both sides.
@@ -988,19 +1239,44 @@ func main() {
 		err = cmdSetCal(rest)
 	case "set-cal-source":
 		err = cmdSetCalSource(rest)
+	case "set-pll":
+		err = cmdSetPll(rest)
+	case "set-band":
+		err = cmdSetBand(rest)
 	case "help", "-h", "--help":
 		usage()
 		return
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
 		usage()
-		os.Exit(2)
+		os.Exit(exitUsage)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		if errors.Is(err, io.EOF) {
-			os.Exit(3)
-		}
-		os.Exit(1)
+		os.Exit(classifyExit(cmd, err))
 	}
+}
+
+// classifyExit prints err to stderr and maps it to the process exit code that
+// best describes it (see the exit* constants). It lets a caller tell an input
+// mistake (fix your command) apart from the device rejecting the request or
+// being unreachable — without parsing the message text.
+func classifyExit(cmd string, err error) int {
+	var ue *usageError
+	if errors.As(err, &ue) {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintf(os.Stderr, "Run 'rf-control %s --help' for usage.\n", cmd)
+		return exitUsage
+	}
+	var de *client.DeviceError
+	if errors.As(err, &de) {
+		fmt.Fprintln(os.Stderr, "Error: the device rejected the request:", err)
+		return exitDevice
+	}
+	var te *client.TransportError
+	if errors.As(err, &te) || errors.Is(err, io.EOF) {
+		fmt.Fprintln(os.Stderr, "Error: could not reach the device:", err)
+		return exitTransport
+	}
+	fmt.Fprintln(os.Stderr, "Error:", err)
+	return exitRuntime
 }
