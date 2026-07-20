@@ -247,9 +247,13 @@ func (c *Client) SetCalSource(internal bool) error {
 // NOTE: the firmware does not handle this request yet (see control.proto's
 // DIVERGENCE note); until the handler lands a device replies with a
 // *DeviceError of code UNSUPPORTED rather than switching the clock.
+//
+// The wire field carries `external`, the opposite sense to this argument and to
+// SetCalSource — see the POLARITY note in control.proto. Negate here so callers
+// only ever deal in `internal`.
 func (c *Client) SetClockSource(internal bool) error {
 	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetClockSourceRequest{
-		SetClockSourceRequest: &pb.SetClockSourceRequest{Internal: internal},
+		SetClockSourceRequest: &pb.SetClockSourceRequest{External: !internal},
 	}})
 	if err != nil {
 		return err
@@ -289,6 +293,57 @@ func (c *Client) SetPllFrequency(freqMHz int32) error {
 		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
 	}
 	return nil
+}
+
+// SetLoFrequency sets the Barracuda LMX2595 LO output in MHz (0 powers it down).
+func (c *Client) SetLoFrequency(freqMHz int32) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetLoFrequencyRequest{
+		SetLoFrequencyRequest: &pb.SetLoFrequencyRequest{FrequencyMhz: freqMHz},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetLoFrequencyResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// SetDsaAttenuation sets the Barracuda HMC1119 DSA in 0.25 dB units
+// (quarterDb 0..127 → 0..31.75 dB).
+func (c *Client) SetDsaAttenuation(quarterDb int32) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetDsaAttenuationRequest{
+		SetDsaAttenuationRequest: &pb.SetDsaAttenuationRequest{QuarterDb: quarterDb},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetDsaAttenuationResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// SetChirp programs/arms the Barracuda ADF4159 FMCW ramp and returns the
+// reported lock state. With enabled=false the PLL holds a CW tone at startFreqMHz.
+func (c *Client) SetChirp(startFreqMHz, deviationMHz int32, rampTimeUs uint32, mode pb.ChirpMode, enabled bool) (locked bool, err error) {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetChirpRequest{
+		SetChirpRequest: &pb.SetChirpRequest{
+			StartFreqMhz: startFreqMHz,
+			DeviationMhz: deviationMHz,
+			RampTimeUs:   rampTimeUs,
+			Mode:         mode,
+			Enabled:      enabled,
+		},
+	}})
+	if err != nil {
+		return false, err
+	}
+	cr, ok := resp.MessageId.(*pb.Packet_SetChirpResponse)
+	if !ok {
+		return false, fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return cr.SetChirpResponse.GetLocked(), nil
 }
 
 // SetRfBand selects a STRAPS band preset. On the STRAPS board the firmware

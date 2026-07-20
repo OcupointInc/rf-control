@@ -11,11 +11,19 @@
 // Do not hand-edit controlpb/control.pb.go.
 //
 // DIVERGENCE (pending firmware sync): SetClockSource (Packet tags 30/31) and
-// GetStatusResponse.clock_source_internal are defined here ahead of the
+// GetStatusResponse.clock_source_external are defined here ahead of the
 // canonical firmware proto — the STRAPS internal/external reference-clock select
 // (SI53301 CLK_SEL, on GP27 via a board mod). The firmware does not handle it
 // yet, so a device replies ERROR_CODE_UNSUPPORTED until the handler lands; when
 // it does, mirror these additions into the canonical proto with the SAME tags.
+//
+// POLARITY: both fields carry `external` sense — true = external reference,
+// false = internal on-board oscillator. This is the OPPOSITE of the adjacent
+// cal_source_internal / SetCalSourceRequest.internal fields, and it was chosen
+// on the host side before any firmware handler existed to validate it against.
+// When implementing the handler, mirror this sense exactly, or drive CLK_SEL to
+// match it — a mismatch decodes cleanly (bool on field 1 either way) and shows
+// up only as the LO locking to the wrong reference.
 syntax = "proto3";
 
 package control;
@@ -45,6 +53,15 @@ enum RfBand {
   RF_BAND_1800_2700MHZ = 2;
   RF_BAND_2700_3600MHZ = 3;
   RF_BAND_3600_4500MHZ = 4;
+}
+
+// FMCW chirp/ramp shape for the ADF4159 (Barracuda). CONTINUOUS variants free-run
+// once armed; TRIGGERED variants emit one ramp per TXDATA trigger pulse.
+enum ChirpMode {
+  CHIRP_MODE_SAWTOOTH_CONTINUOUS = 0;  // reset-to-start sawtooth, free-running
+  CHIRP_MODE_TRIANGLE_CONTINUOUS = 1;  // up/down triangle, free-running
+  CHIRP_MODE_SAWTOOTH_TRIGGERED  = 2;  // one sawtooth ramp per trigger
+  CHIRP_MODE_TRIANGLE_TRIGGERED  = 3;  // one triangle ramp per trigger
 }
 
 // Reason a request could not be completed (see ErrorResponse).
@@ -85,8 +102,12 @@ message SetCalSourceRequest {
 // STRAPS reference-clock source select (SI53301 CLK_SEL line, on GP27 via a
 // board mod). Selects whether the LMX2595 is fed by the on-board oscillator or
 // an external reference. No-op on boards without a switchable clock.
+//
+// This select carries `external`, the opposite sense to SetCalSourceRequest's
+// `internal` above. The Go API still takes an `internal` bool and negates at
+// this boundary, so the CLI and JSON surfaces are unaffected.
 message SetClockSourceRequest {
-  bool internal = 1;  // false = external clock, true = internal on-board oscillator
+  bool external = 1;  // false = internal on-board oscillator, true = external clock
 }
 
 message SetChannelsEnabledRequest {
@@ -164,10 +185,16 @@ message GetStatusResponse {
   // CAL_ATT attenuator). Distinct from attenuation_db, which is the frontend
   // attenuator. Meaningless on variants without a cal attenuator.
   int32 cal_attenuation_db = 11;
-  // STRAPS reference-clock source: true = internal on-board oscillator,
-  // false = external. Meaningless on variants without a switchable clock.
-  // (Firmware read-back pending — see the DIVERGENCE note at the top.)
-  bool clock_source_internal = 12;
+  // STRAPS reference-clock source: true = external clock, false = internal
+  // on-board oscillator. Inverted relative to cal_source_internal above; see
+  // the POLARITY note at the top. Meaningless on variants without a switchable
+  // clock. (Firmware read-back pending — an unset field decodes as false, which
+  // reads as "internal" here.)
+  bool clock_source_external = 12;
+  // Barracuda: ADF4159 MUXOUT digital lock-detect (true = PLL locked).
+  bool pll_locked = 13;
+  // Barracuda: LMK05318B locked to the 10 MHz reference (false = holdover/free-run).
+  bool ref_locked = 14;
 }
 
 message GetConfigRequest {}
@@ -212,6 +239,34 @@ message ErrorResponse {
   string detail = 2;  // short human-readable context; may be empty
 }
 
+// LMX2595 LO synthesizer output (Barracuda). 0 powers the synth down. Distinct
+// from SetPllFrequency, which targets the ADF4159/HMC733 VCO chain.
+message SetLoFrequencyRequest {
+  int32 frequency_mhz = 1;
+}
+message SetLoFrequencyResponse {}
+
+// FMCW chirp control for the ADF4159 direct-modulation PLL (Barracuda). Programs
+// the ramp and (dis)arms it. With enabled=false the PLL holds a CW tone at
+// start_freq_mhz.
+message SetChirpRequest {
+  int32 start_freq_mhz = 1;  // VCO output at ramp start
+  int32 deviation_mhz  = 2;  // chirp bandwidth (e.g. 1500 for 1.5 GHz)
+  uint32 ramp_time_us  = 3;  // ramp duration in microseconds (e.g. 35)
+  ChirpMode mode       = 4;
+  bool enabled         = 5;  // true = arm/run the ramp, false = CW at start freq
+}
+message SetChirpResponse {
+  bool locked = 1;           // ADF4159 reported lock after programming
+}
+
+// Fine (0.25 dB) attenuation for the HMC1119 DSA (Barracuda). quarter_db is in
+// 0.25 dB units, 0…127 (0…31.75 dB); distinct from SetAttenuation (whole dB).
+message SetDsaAttenuationRequest {
+  int32 quarter_db = 1;
+}
+message SetDsaAttenuationResponse {}
+
 // Packet message with all request and response types
 message Packet {
   oneof message_id {
@@ -246,5 +301,11 @@ message Packet {
     ErrorResponse error_response = 29;
     SetClockSourceRequest set_clock_source_request = 30;
     SetClockSourceResponse set_clock_source_response = 31;
+    SetLoFrequencyRequest set_lo_frequency_request = 32;
+    SetLoFrequencyResponse set_lo_frequency_response = 33;
+    SetChirpRequest set_chirp_request = 34;
+    SetChirpResponse set_chirp_response = 35;
+    SetDsaAttenuationRequest set_dsa_attenuation_request = 36;
+    SetDsaAttenuationResponse set_dsa_attenuation_response = 37;
   }
 }

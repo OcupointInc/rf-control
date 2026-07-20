@@ -128,7 +128,14 @@ rf-control set-cal-source internal  # whalepod cal source (CAL_SEL): internal|ex
 rf-control set-clock internal     # STRAPS reference clock (SI53301 CLK_SEL): internal|external
 rf-control set-pll 3500            # tune the STRAPS LMX2595 LO, in MHz
 rf-control set-band 1800-2700     # STRAPS band preset: switches + LO in one shot
+rf-control set-switch-channel 3   # SP8T RF-switch board: route channel 3 (or "off")
 ```
+
+`set-switch-channel` drives the PE42582 SP8T RF-switch board (`board_type:
+rf_switch`), routing one of the eight channels to the common port; `off`
+isolates all eight. That board has no attenuator, PLL, or calibration path — its
+firmware stubs those out — so `status` reports only the board type and the
+selected channel, and the other `set-*` commands are no-ops on it.
 
 On the Whalepod the internal noise-source amplifier only turns on when
 calibration mode is active *and* the internal source is selected, i.e.
@@ -171,6 +178,8 @@ set-clock <internal|external>
                        — firmware handler pending (replies unsupported for now)
 set-pll <MHz>          Tune the STRAPS LMX2595 LO
 set-band <band>        Apply a STRAPS band preset (switches + LO)
+set-switch-channel <1-8|off>
+                       Route the SP8T RF-switch board's common port
 ```
 
 ## Exit codes

@@ -21,6 +21,11 @@ import (
 	pb "github.com/OcupointInc/rf-control/controlpb"
 )
 
+// version is stamped at link time by the release workflow
+// (-X main.version=...): a tag name like "v1.2.3" for a tagged release, or
+// "latest-<sha>" for the rolling build of main. Local `go build` leaves "dev".
+var version = "dev"
+
 // verbose is set by the -v / --verbose flag (see addCommonFlags). When true,
 // transports hex-dump bytes sent and received and log timings.
 var verbose bool
@@ -327,12 +332,26 @@ func cmdStatus(args []string) error {
 
 	// "whalepod" hardware only has attenuators — no PLL, no RF/mixer/IF
 	// switches. Suppress those fields so the output reflects the device.
-	hasRFFrontend := s.BoardType != "whalepod"
+	hasRFFrontend := s.BoardType != "whalepod" && s.BoardType != "rf_switch"
 
 	fmt.Println("--- Device RF Status ---")
 	if s.BoardType != "" {
 		fmt.Printf("Board               : %s\n", s.BoardType)
 	}
+
+	// The SP8T switch board is the mirror image of the whalepod: its firmware
+	// stubs out the attenuator, PLL, and calibration path entirely, so every
+	// other field in GetStatusResponse is an uninitialised default. The
+	// selected channel is the only thing this board actually knows.
+	if s.BoardType == "rf_switch" {
+		if s.RfSwitchChannel == 0 {
+			fmt.Printf("RF switch channel   : off (all isolated)\n")
+		} else {
+			fmt.Printf("RF switch channel   : %d\n", s.RfSwitchChannel)
+		}
+		return nil
+	}
+
 	fmt.Printf("Channels enabled    : %v\n", s.ChannelsEnabled)
 	fmt.Printf("Calibration enabled : %v\n", s.CalibrationEnabled)
 	fmt.Printf("Frontend atten (dB) : %d\n", s.AttenuationDb)
@@ -539,6 +558,110 @@ func cmdSetClockSource(args []string) error {
 	return nil
 }
 
+func cmdSetLo(args []string) error {
+	fs := flag.NewFlagSet("set-lo", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		return usagef("usage: set-lo <MHz>  (Barracuda LMX2595 LO; 0 powers it down)")
+	}
+	mhz, err := strconv.Atoi(fs.Arg(0))
+	if err != nil || mhz < 0 || mhz > 20000 {
+		return usagef("invalid frequency %q (expected integer MHz, 0-20000)", fs.Arg(0))
+	}
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetLoFrequency(int32(mhz)); err != nil {
+		return err
+	}
+	fmt.Printf("OK (LO = %d MHz)\n", mhz)
+	return nil
+}
+
+func cmdSetDsa(args []string) error {
+	fs := flag.NewFlagSet("set-dsa", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		return usagef("usage: set-dsa <dB>  (Barracuda HMC1119, 0-31.75 dB in 0.25 dB steps)")
+	}
+	db, err := strconv.ParseFloat(fs.Arg(0), 64)
+	if err != nil || db < 0 || db > 31.75 {
+		return usagef("invalid attenuation %q (expected 0-31.75 dB)", fs.Arg(0))
+	}
+	quarter := int32(db*4 + 0.5) // 0.25 dB per LSB
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetDsaAttenuation(quarter); err != nil {
+		return err
+	}
+	fmt.Printf("OK (DSA = %.2f dB)\n", float64(quarter)/4)
+	return nil
+}
+
+func cmdSetChirp(args []string) error {
+	fs := flag.NewFlagSet("set-chirp", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	start := fs.Int("start", 11700, "ramp start frequency in MHz (VCO output)")
+	dev := fs.Int("dev", 1500, "chirp deviation / bandwidth in MHz")
+	timeUs := fs.Int("time", 35, "ramp time in microseconds")
+	mode := fs.String("mode", "sawtooth", "ramp shape: sawtooth|triangle")
+	triggered := fs.Bool("triggered", false, "one ramp per TXDATA trigger (else free-running)")
+	off := fs.Bool("off", false, "disable the ramp (hold CW at --start)")
+	_ = fs.Parse(args)
+
+	var cm pb.ChirpMode
+	switch strings.ToLower(*mode) {
+	case "sawtooth", "saw":
+		cm = pb.ChirpMode_CHIRP_MODE_SAWTOOTH_CONTINUOUS
+		if *triggered {
+			cm = pb.ChirpMode_CHIRP_MODE_SAWTOOTH_TRIGGERED
+		}
+	case "triangle", "tri":
+		cm = pb.ChirpMode_CHIRP_MODE_TRIANGLE_CONTINUOUS
+		if *triggered {
+			cm = pb.ChirpMode_CHIRP_MODE_TRIANGLE_TRIGGERED
+		}
+	default:
+		return usagef("invalid --mode %q (expected sawtooth|triangle)", *mode)
+	}
+	if *start < 0 || *dev < 0 || *timeUs <= 0 {
+		return usagef("--start/--dev must be >= 0 and --time > 0")
+	}
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	locked, err := c.SetChirp(int32(*start), int32(*dev), uint32(*timeUs), cm, !*off)
+	if err != nil {
+		return err
+	}
+	if *off {
+		fmt.Printf("OK (ramp disabled; CW at %d MHz)\n", *start)
+	} else {
+		trig := ""
+		if *triggered {
+			trig = ", triggered"
+		}
+		fmt.Printf("OK (chirp %d MHz + %d MHz over %d us, %s%s; locked=%v)\n",
+			*start, *dev, *timeUs, strings.ToLower(*mode), trig, locked)
+	}
+	return nil
+}
+
 func cmdSetPll(args []string) error {
 	fs := flag.NewFlagSet("set-pll", flag.ExitOnError)
 	common := &commonFlags{}
@@ -564,6 +687,53 @@ func cmdSetPll(args []string) error {
 		return err
 	}
 	fmt.Printf("OK (PLL LO = %d MHz)\n", mhz)
+	return nil
+}
+
+// cmdSetSwitchChannel drives the PE42582 SP8T switch board. Deliberately not
+// named "set-channel": that reads as a singular of the unrelated `set-channels
+// <on|off>`, and the two would silently do very different things to a typo.
+func cmdSetSwitchChannel(args []string) error {
+	fs := flag.NewFlagSet("set-switch-channel", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return usagef("usage: set-switch-channel <1-8|off>  (SP8T RF-switch board; e.g. set-switch-channel 3)")
+	}
+
+	// Channel 0 is the firmware's all-off / all-isolated state. Spell it "off"
+	// on the command line so isolating the switch is an explicit word rather
+	// than a magic zero.
+	arg := fs.Arg(0)
+	var ch int
+	switch strings.ToLower(arg) {
+	case "off", "none", "isolate":
+		ch = 0
+	default:
+		var err error
+		ch, err = strconv.Atoi(arg)
+		if err != nil || ch < 0 || ch > 8 {
+			return usagef("invalid channel %q (expected 1-8, or \"off\")", arg)
+		}
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+
+	if err := c.SetRfSwitchChannel(int32(ch)); err != nil {
+		return err
+	}
+	if ch == 0 {
+		fmt.Println("OK (all channels off / isolated)")
+	} else {
+		fmt.Printf("OK (channel %d)\n", ch)
+	}
 	return nil
 }
 
@@ -824,7 +994,9 @@ func statusToJSON(s *pb.GetStatusResponse) *statusJSON {
 		ChannelsEnabled:     s.ChannelsEnabled,
 		CalibrationEnabled:  s.CalibrationEnabled,
 		CalSourceInternal:   s.CalSourceInternal,
-		ClockSourceInternal: s.ClockSourceInternal,
+		// Wire field carries `external`; negate so the JSON key keeps its
+		// `internal` sense. See the POLARITY note in control.proto.
+		ClockSourceInternal: !s.ClockSourceExternal,
 		AttenuationDb:       s.AttenuationDb,
 		CalAttenuationDb:    s.CalAttenuationDb,
 		LoFrequencyMhz:      s.LoFrequencyMhz,
@@ -1189,7 +1361,8 @@ Commands:
                            rf_switch_channel, and a network{} block (static_ip,
                            static_gateway, static_subnet, hostname).
   status                 Print live RF status (channels, attenuation,
-                         LO frequency, switch positions).
+                         LO frequency, switch positions). On the SP8T
+                         RF-switch board, prints the selected channel.
   set-att <dB>           Set frontend attenuation in dB (e.g. 10).
   set-cal-att <dB>       Set calibration attenuation in dB.
   set-channels <on|off>  Enable or disable the RF channels.
@@ -1202,9 +1375,22 @@ Commands:
   set-clock <internal|external>
                          Select the STRAPS reference clock (SI53301 CLK_SEL):
                          internal on-board oscillator vs external reference.
-  set-pll <MHz>          Tune the STRAPS LMX2595 LO (e.g. 3500).
+  set-pll <MHz>          Tune the STRAPS LMX2595 LO (e.g. 3500). On Barracuda
+                         this tunes the ADF4159 VCO CW tone.
   set-band <band>        Apply a STRAPS band preset (switches + LO in one shot).
+
+  Barracuda RF module:
+  set-lo <MHz>           Tune the LMX2595 LO (0 powers it down).
+  set-dsa <dB>           HMC1119 attenuation, 0-31.75 dB in 0.25 dB steps.
+  set-chirp [flags]      Program/arm the ADF4159 FMCW ramp. Flags:
+                           --start MHz (11700)  --dev MHz (1500)  --time us (35)
+                           --mode sawtooth|triangle  --triggered  --off
+                         Reports the ADF4159 lock state after programming.
                          Accepts a span like 1800-2700, an RF_BAND_* name, or 0-4.
+  set-switch-channel <1-8|off>
+                         Route the SP8T RF-switch board's common port to one of
+                         the eight channels, or "off" to isolate all of them.
+  version                Print the binary's version and exit.
 
 Transport selection (place before the command):
   --usb DEVICE   Use that USB serial device, e.g. /dev/cu.usbmodem101.
@@ -1247,6 +1433,18 @@ func main() {
 	cmdIdx := -1
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		// `version` and `help` also spell as flags, and a flag spelling can
+		// never be picked as the subcommand below. Catch them here, before the
+		// `--flag value` rule mistakes one for a transport flag. The loop stops
+		// at the subcommand, so a later `--help` still reaches its own flagset.
+		switch a {
+		case "-V", "--version":
+			fmt.Println(version)
+			return
+		case "-h", "--help":
+			usage()
+			return
+		}
 		if !strings.HasPrefix(a, "-") {
 			cmdIdx = i
 			break
@@ -1295,8 +1493,19 @@ func main() {
 		err = cmdSetClockSource(rest)
 	case "set-pll":
 		err = cmdSetPll(rest)
+	case "set-lo":
+		err = cmdSetLo(rest)
+	case "set-dsa":
+		err = cmdSetDsa(rest)
+	case "set-chirp":
+		err = cmdSetChirp(rest)
 	case "set-band":
 		err = cmdSetBand(rest)
+	case "set-switch-channel":
+		err = cmdSetSwitchChannel(rest)
+	case "version":
+		fmt.Println(version)
+		return
 	case "help", "-h", "--help":
 		usage()
 		return

@@ -2,6 +2,8 @@ name: release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -9,9 +11,30 @@ on:
 permissions:
   contents: write
 
+# A second push to main while the first is still building would race to
+# recreate the "latest" release. Serialise per-ref and drop superseded runs.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go vet ./...
+      - run: go test ./...
+
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -49,8 +72,16 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
+          set -euo pipefail
           mkdir -p dist
-          VERSION="${GITHUB_REF_NAME:-dev}"
+          # On a tag, GITHUB_REF_NAME is the tag (v1.2.3). On a main push it is
+          # the branch name, which says nothing about the build — stamp the sha.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="latest-$(git rev-parse --short HEAD)"
+          fi
+          echo "building ${{ matrix.asset }} version=${VERSION}"
           go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
             -o "dist/${{ matrix.asset }}" .
 
@@ -61,8 +92,50 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  release:
-    name: publish release
+  # Every push to main republishes a single rolling "latest" prerelease, so the
+  # download URL never changes. The old release AND its tag are deleted first:
+  # gh will not move an existing tag, so without --cleanup-tag the `latest` tag
+  # (and the source tarballs GitHub derives from it) would stay pinned to
+  # whatever commit first created it.
+  release-latest:
+    name: publish rolling latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Recreate rolling latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA_SHORT="$(git rev-parse --short HEAD)"
+          # Drop the old release and its tag. --cleanup-tag only runs when the
+          # release exists, so delete the ref separately too: a leftover `latest`
+          # tag with no release would otherwise be silently reused by `create`,
+          # leaving the source tarballs pointing at an ancient commit.
+          gh release delete latest --cleanup-tag --yes || true
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" || true
+          gh release create latest dist/* \
+            --target "${GITHUB_SHA}" \
+            --title "latest (${SHA_SHORT})" \
+            --prerelease \
+            --notes "Rolling build of \`main\` @ \`${GITHUB_SHA}\`.
+
+          This release is **replaced on every push to main** — do not pin to it.
+          For a stable, immutable build, push a \`v*\` tag and use that release."
+
+  release-tag:
+    name: publish tagged release
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
