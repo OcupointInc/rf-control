@@ -142,6 +142,24 @@ func (c *Client) GetStatus() (*pb.GetStatusResponse, error) {
 	return got.GetStatusResponse, nil
 }
 
+// GpioSelfTest runs the firmware's control-GPIO diagnostic: the device drives
+// every board control pin low then high, reads the pad back each way, and
+// reports per-pin pass/fail with the stuck direction. Firmware >= 1.1.0. A
+// transport/refusal surfaces as *TransportError / *DeviceError as usual; a
+// returned response with AllPassed=false is a normal (non-error) result the
+// caller inspects.
+func (c *Client) GpioSelfTest() (*pb.GpioSelfTestResponse, error) {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_GpioSelfTestRequest{GpioSelfTestRequest: &pb.GpioSelfTestRequest{}}})
+	if err != nil {
+		return nil, err
+	}
+	got, ok := resp.MessageId.(*pb.Packet_GpioSelfTestResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return got.GpioSelfTestResponse, nil
+}
+
 // SaveConfig writes new network configuration to flash and reboots the
 // device to apply it. Callers typically start from a GetConfig response so
 // fields they don't want to change (MacAddress, SerialNumber, ...) are
@@ -244,12 +262,16 @@ func (c *Client) SetCalSource(internal bool) error {
 // internal = the on-board oscillator, external = an external reference. Boards
 // without a switchable clock accept the request but it's a no-op.
 //
-// NOTE: the firmware does not handle this request yet (see control.proto's
-// DIVERGENCE note); until the handler lands a device replies with a
+// This method's argument keeps the library's original "internal" sense; the
+// wire field is SetClockSourceRequest.external (the OPPOSITE sense), so the
+// value is inverted here. Callers and CLI semantics are unchanged.
+//
+// NOTE: the firmware reserves this request's Packet tags but does not handle it
+// yet (see control.proto); until a handler lands a device replies with a
 // *DeviceError of code UNSUPPORTED rather than switching the clock.
 func (c *Client) SetClockSource(internal bool) error {
 	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetClockSourceRequest{
-		SetClockSourceRequest: &pb.SetClockSourceRequest{Internal: internal},
+		SetClockSourceRequest: &pb.SetClockSourceRequest{External: !internal},
 	}})
 	if err != nil {
 		return err

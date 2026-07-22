@@ -42,7 +42,20 @@ const (
 	exitUsage     = 2 // invalid command-line input: unknown command, bad flag, or bad argument value
 	exitTransport = 3 // could not reach or talk to the device (connection refused, timeout, USB gone)
 	exitDevice    = 4 // the device received the request but rejected it (see the ErrorCode printed)
+	exitFault     = 5 // a diagnostic ran successfully but found a hardware fault (e.g. gpio-selftest: a stuck pin)
 )
+
+// faultError marks an error as "a diagnostic completed but detected a hardware
+// fault" (e.g. gpio-selftest found a stuck pin) rather than a usage, device, or
+// transport failure. The command has already printed its own result table, so
+// classifyExit maps this to exitFault without printing a generic "Error:" line.
+type faultError struct{ err error }
+
+func (e *faultError) Error() string { return e.err.Error() }
+func (e *faultError) Unwrap() error { return e.err }
+
+// faultf builds a faultError from a printf-style message.
+func faultf(format string, a ...any) error { return &faultError{err: fmt.Errorf(format, a...)} }
 
 // usageError marks an error as caused by bad user input, so main() can exit with
 // exitUsage (and, for interactive commands, point the user at --help) instead of
@@ -341,6 +354,270 @@ func cmdStatus(args []string) error {
 		fmt.Printf("RF switch           : %s\n", s.RfSwitch)
 		fmt.Printf("Mixer switch        : %s\n", s.MixerSwitch)
 		fmt.Printf("IF switch           : %s\n", s.IfSwitch)
+	}
+	// pll_locked / ref_locked are only populated by Barracuda firmware (ADF4159
+	// lock-detect and LMK05318B reference lock); other boards leave them zero, so
+	// only show them where they're meaningful.
+	if s.BoardType == "barracuda" {
+		fmt.Printf("PLL locked          : %v\n", s.PllLocked)
+		fmt.Printf("Ref locked          : %v\n", s.RefLocked)
+	}
+	return nil
+}
+
+// stuckWord renders a GpioStuckState as the word shown in the FAIL annotation.
+func stuckWord(s pb.GpioStuckState) string {
+	switch s {
+	case pb.GpioStuckState_GPIO_STUCK_STATE_LOW:
+		return "LOW"
+	case pb.GpioStuckState_GPIO_STUCK_STATE_HIGH:
+		return "HIGH"
+	default:
+		return "?"
+	}
+}
+
+// formatGPIOSelfTest renders a GpioSelfTestResponse as an aligned, human-readable
+// table followed by a summary Result line. It's factored out of cmdGpioSelfTest
+// so the formatting can be unit-tested without a transport. Columns (GPIO number
+// and signal name) are sized to the widest entry so the table stays aligned for
+// any pin set.
+//
+// board is the device's BoardType (from GetStatus); it lets each FAILed pin
+// carry a plain-English, board-specific consequence on an indented continuation
+// line (see client.GpioFaultDescription). Pass "" — e.g. when the board type
+// couldn't be read — to print the bare table with no descriptions.
+func formatGPIOSelfTest(board string, resp *pb.GpioSelfTestResponse) string {
+	pins := resp.GetPins()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "GPIO self-test — %d pins\n", len(pins))
+
+	pinW, nameW := 1, 0
+	for _, p := range pins {
+		if w := len(strconv.FormatUint(uint64(p.GetPin()), 10)); w > pinW {
+			pinW = w
+		}
+		if w := len(p.GetName()); w > nameW {
+			nameW = w
+		}
+	}
+	// Indent for a fault's continuation line, aligned under the signal-name
+	// column: two leading spaces + "GPIO " + the pin field (pinW) + two spaces.
+	descIndent := strings.Repeat(" ", 9+pinW)
+
+	stuck := 0
+	for _, p := range pins {
+		status := "PASS"
+		if !p.GetPassed() {
+			stuck++
+			status = "FAIL  (stuck " + stuckWord(p.GetStuck()) + ")"
+		}
+		fmt.Fprintf(&b, "  GPIO %*d  %-*s  %s\n", pinW, p.GetPin(), nameW, p.GetName(), status)
+		if !p.GetPassed() {
+			if desc := client.GpioFaultDescription(board, p.GetName(), p.GetStuck()); desc != "" {
+				fmt.Fprintf(&b, "%s↳ %s\n", descIndent, desc)
+			}
+		}
+	}
+
+	if resp.GetAllPassed() {
+		fmt.Fprintf(&b, "Result: PASS — all %d pin(s) ok\n", len(pins))
+	} else {
+		fmt.Fprintf(&b, "Result: FAIL — %d of %d pin(s) stuck\n", stuck, len(pins))
+	}
+	return b.String()
+}
+
+func isWhalepod(board string) bool {
+	return board == "whalepod" || board == "whalepod_automation"
+}
+
+// whalepodSelfTestGroups maps the Whalepod control pins into the functional
+// subsystems the high-level gpio-selftest view reports. Slice order is the
+// display order; a group appears only if at least one of its member pin-names is
+// present in the response. Keyed by the firmware pin `name`. (On the automation
+// build "Calibration source select" has only CAL_AMP_EN — no CAL_SEL — and
+// "Clock enable" is present; base whalepod is the reverse and adds CAL_ATT.)
+var whalepodSelfTestGroups = []struct {
+	name    string
+	members []string
+}{
+	{"Power enable", []string{"PWR_EN", "FE_EN"}},
+	{"Attenuator control (VHF/UHF)", []string{"SCK", "MOSI", "CS_VHF", "CS_UHF"}},
+	{"Calibration enable", []string{"CAL_SW"}},
+	{"Calibration source select", []string{"CAL_SEL", "CAL_AMP_EN"}},
+	{"Clock enable", []string{"CLOCK_EN"}},
+	{"Cal-path attenuator", []string{"CAL_ATT"}},
+}
+
+// formatGPIOSelfTestGrouped renders the self-test as one line per functional
+// subsystem (Power enable / Attenuator control / …) rather than per pin. A
+// subsystem is PASS only if every one of its present control pins passed. A
+// FAILing subsystem that owns a single pin just shows the plain-English
+// consequence; one that owns several (the attenuator bus) spells out which of
+// its pins passed and which failed, so it's clear whether the loss is all
+// attenuation (SCK/MOSI) or one channel (CS_VHF / CS_UHF). Whalepod-only; other
+// boards use the flat per-pin table.
+func formatGPIOSelfTestGrouped(board string, resp *pb.GpioSelfTestResponse) string {
+	pins := resp.GetPins()
+	byName := make(map[string]*pb.GpioPinResult, len(pins))
+	for _, p := range pins {
+		byName[p.GetName()] = p
+	}
+
+	type grp struct {
+		name    string
+		members []*pb.GpioPinResult // present members, in taxonomy order
+	}
+	var groups []grp
+	claimed := make(map[string]bool)
+	for _, g := range whalepodSelfTestGroups {
+		var present []*pb.GpioPinResult
+		for _, m := range g.members {
+			if p, ok := byName[m]; ok {
+				present = append(present, p)
+				claimed[m] = true
+			}
+		}
+		if len(present) > 0 {
+			groups = append(groups, grp{g.name, present})
+		}
+	}
+	// Any pin not claimed by a subsystem still gets reported, so nothing is
+	// silently dropped if the firmware pin set ever grows.
+	var other []*pb.GpioPinResult
+	for _, p := range pins {
+		if !claimed[p.GetName()] {
+			other = append(other, p)
+		}
+	}
+	if len(other) > 0 {
+		groups = append(groups, grp{"Other", other})
+	}
+
+	nameW := 0
+	for _, g := range groups {
+		if len(g.name) > nameW {
+			nameW = len(g.name)
+		}
+	}
+
+	var b strings.Builder
+	overall := "PASS"
+	if !resp.GetAllPassed() {
+		overall = "FAIL"
+	}
+	fmt.Fprintf(&b, "GPIO self-test — %s: %s\n", board, overall)
+
+	stuck := 0
+	for _, g := range groups {
+		failed := false
+		for _, p := range g.members {
+			if !p.GetPassed() {
+				failed = true
+			}
+		}
+		if !failed {
+			fmt.Fprintf(&b, "  %-*s  PASS\n", nameW, g.name)
+			continue
+		}
+		fmt.Fprintf(&b, "  %-*s  FAIL\n", nameW, g.name)
+
+		if len(g.members) == 1 {
+			// Single-pin subsystem: the subsystem name already identifies it, so
+			// just give the consequence (fall back to a bare pin line if there's
+			// no board-specific description, e.g. an "Other" pin).
+			p := g.members[0]
+			stuck++
+			if desc := client.GpioFaultDescription(board, p.GetName(), p.GetStuck()); desc != "" {
+				fmt.Fprintf(&b, "      ↳ %s\n", desc)
+			} else {
+				fmt.Fprintf(&b, "      ↳ %s (GPIO %d) stuck %s\n", p.GetName(), p.GetPin(), stuckWord(p.GetStuck()))
+			}
+			continue
+		}
+
+		// Multi-pin subsystem: spell out each pin's result.
+		mnameW, labelW := 0, 0
+		labels := make([]string, len(g.members))
+		for i, p := range g.members {
+			if w := len(p.GetName()); w > mnameW {
+				mnameW = w
+			}
+			labels[i] = fmt.Sprintf("(GPIO %d)", p.GetPin())
+			if len(labels[i]) > labelW {
+				labelW = len(labels[i])
+			}
+		}
+		for i, p := range g.members {
+			status := "PASS"
+			if !p.GetPassed() {
+				stuck++
+				status = "FAIL  (stuck " + stuckWord(p.GetStuck()) + ")"
+			}
+			fmt.Fprintf(&b, "      %-*s %-*s  %s\n", mnameW, p.GetName(), labelW, labels[i], status)
+			if !p.GetPassed() {
+				if desc := client.GpioFaultDescription(board, p.GetName(), p.GetStuck()); desc != "" {
+					fmt.Fprintf(&b, "          ↳ %s\n", desc)
+				}
+			}
+		}
+	}
+
+	if resp.GetAllPassed() {
+		fmt.Fprintf(&b, "Result: PASS\n")
+	} else {
+		fmt.Fprintf(&b, "Result: FAIL — %d of %d pin(s) stuck\n", stuck, len(pins))
+	}
+	return b.String()
+}
+
+// cmdGpioSelfTest runs the firmware's control-GPIO diagnostic and prints an
+// aligned pass/fail table. It exits exitFault (not exitDevice/exitTransport)
+// when the test ran but found a stuck pin — that's a hardware fault the device
+// reported successfully, not a rejected request or an unreachable device.
+func cmdGpioSelfTest(args []string) error {
+	fs := flag.NewFlagSet("gpio-selftest", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	rawPins := fs.Bool("pins", false, "show the raw per-pin table instead of the grouped subsystem view")
+	_ = fs.Parse(args)
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+
+	// Learn the board type first so each failed pin can carry a board-specific,
+	// plain-English consequence (the self-test response itself has no board_type).
+	// A status read that fails must NOT abort the diagnostic — fall back to an
+	// empty board string, which just suppresses the per-pin descriptions.
+	board := ""
+	if st, err := c.GetStatus(); err != nil {
+		vlogf("gpio-selftest: could not read board type (%v); fault descriptions disabled", err)
+	} else {
+		board = st.GetBoardType()
+	}
+
+	resp, err := c.GpioSelfTest()
+	if err != nil {
+		return err
+	}
+
+	// Default to the high-level subsystem view on Whalepod; --pins (or any board
+	// without a subsystem taxonomy) falls back to the raw per-pin table.
+	if !*rawPins && isWhalepod(board) {
+		fmt.Print(formatGPIOSelfTestGrouped(board, resp))
+	} else {
+		fmt.Print(formatGPIOSelfTest(board, resp))
+	}
+
+	if !resp.GetAllPassed() {
+		// The table above is the detail; signal the fault via the exit code.
+		return faultf("gpio self-test found a stuck pin")
 	}
 	return nil
 }
@@ -820,11 +1097,13 @@ type statusJSON struct {
 
 func statusToJSON(s *pb.GetStatusResponse) *statusJSON {
 	return &statusJSON{
-		BoardType:           s.BoardType,
-		ChannelsEnabled:     s.ChannelsEnabled,
-		CalibrationEnabled:  s.CalibrationEnabled,
-		CalSourceInternal:   s.CalSourceInternal,
-		ClockSourceInternal: s.ClockSourceInternal,
+		BoardType:          s.BoardType,
+		ChannelsEnabled:    s.ChannelsEnabled,
+		CalibrationEnabled: s.CalibrationEnabled,
+		CalSourceInternal:  s.CalSourceInternal,
+		// The wire field is clock_source_external (opposite sense); the JSON
+		// stays clock_source_internal for backward compatibility, so invert.
+		ClockSourceInternal: !s.ClockSourceExternal,
 		AttenuationDb:       s.AttenuationDb,
 		CalAttenuationDb:    s.CalAttenuationDb,
 		LoFrequencyMhz:      s.LoFrequencyMhz,
@@ -1190,6 +1469,11 @@ Commands:
                            static_gateway, static_subnet, hostname).
   status                 Print live RF status (channels, attenuation,
                          LO frequency, switch positions).
+  gpio-selftest          Run the firmware's control-GPIO diagnostic (alias:
+                         selftest). Drives every control pin low then high and
+                         reads the pad back, printing a per-pin pass/fail table.
+                         DISRUPTIVE (toggles power-enable/select lines); exits 5
+                         if any pin is stuck.
   set-att <dB>           Set frontend attenuation in dB (e.g. 10).
   set-cal-att <dB>       Set calibration attenuation in dB.
   set-channels <on|off>  Enable or disable the RF channels.
@@ -1220,6 +1504,7 @@ Exit codes:
   2  invalid input (unknown command, bad flag, or bad argument value)
   3  could not reach the device (connection refused, timeout, USB gone)
   4  the device received the request but rejected it (see the ErrorCode printed)
+  5  a diagnostic ran but found a hardware fault (gpio-selftest: a stuck pin)
 
 This CLI is a thin wrapper around the client Go package in this repo
 (github.com/OcupointInc/rf-control/client) — import it directly if you want
@@ -1281,6 +1566,8 @@ func main() {
 		err = cmdApply(rest)
 	case "status":
 		err = cmdStatus(rest)
+	case "gpio-selftest", "selftest":
+		err = cmdGpioSelfTest(rest)
 	case "set-att":
 		err = cmdSetAtt(rest)
 	case "set-cal-att":
@@ -1320,6 +1607,13 @@ func classifyExit(cmd string, err error) int {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		fmt.Fprintf(os.Stderr, "Run 'rf-control %s --help' for usage.\n", cmd)
 		return exitUsage
+	}
+	// A diagnostic that ran fine but found a hardware fault (e.g. gpio-selftest
+	// with a stuck pin). The command already printed its result table, so don't
+	// print a redundant "Error:" line — just map it to the fault exit code.
+	var fe *faultError
+	if errors.As(err, &fe) {
+		return exitFault
 	}
 	var de *client.DeviceError
 	if errors.As(err, &de) {

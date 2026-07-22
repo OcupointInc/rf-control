@@ -10,12 +10,16 @@
 //
 // Do not hand-edit controlpb/control.pb.go.
 //
-// DIVERGENCE (pending firmware sync): SetClockSource (Packet tags 30/31) and
-// GetStatusResponse.clock_source_internal are defined here ahead of the
-// canonical firmware proto — the STRAPS internal/external reference-clock select
-// (SI53301 CLK_SEL, on GP27 via a board mod). The firmware does not handle it
-// yet, so a device replies ERROR_CODE_UNSUPPORTED until the handler lands; when
-// it does, mirror these additions into the canonical proto with the SAME tags.
+// IN SYNC (as of 2026-07-21): the former SetClockSource DIVERGENCE is resolved.
+// The canonical firmware proto has adopted the STRAPS reference-clock select at
+// the same Packet tags (30/31) this library defined ahead of it, but with a
+// `bool external` field — the OPPOSITE sense to this library's earlier
+// `bool internal` — and GetStatusResponse.clock_source_external (tag 12). This
+// copy now tracks canonical byte-for-byte, including the Barracuda additions
+// (ChirpMode; SetLoFrequency/SetChirp/SetDsaAttenuation; Discovery; and the
+// pll_locked/ref_locked status fields). See client/client.go SetClockSource,
+// which still takes `internal bool` and inverts it onto the wire so the
+// library/CLI semantics are unchanged.
 syntax = "proto3";
 
 package control;
@@ -45,6 +49,15 @@ enum RfBand {
   RF_BAND_1800_2700MHZ = 2;
   RF_BAND_2700_3600MHZ = 3;
   RF_BAND_3600_4500MHZ = 4;
+}
+
+// FMCW chirp/ramp shape for the ADF4159 (Barracuda). CONTINUOUS variants free-run
+// once armed; TRIGGERED variants emit one ramp per TXDATA trigger pulse.
+enum ChirpMode {
+  CHIRP_MODE_SAWTOOTH_CONTINUOUS = 0;  // reset-to-start sawtooth, free-running
+  CHIRP_MODE_TRIANGLE_CONTINUOUS = 1;  // up/down triangle, free-running
+  CHIRP_MODE_SAWTOOTH_TRIGGERED  = 2;  // one sawtooth ramp per trigger
+  CHIRP_MODE_TRIANGLE_TRIGGERED  = 3;  // one triangle ramp per trigger
 }
 
 // Reason a request could not be completed (see ErrorResponse).
@@ -82,13 +95,6 @@ message SetCalSourceRequest {
   bool internal = 1;  // false = external cal (CAL_SEL low), true = internal (high)
 }
 
-// STRAPS reference-clock source select (SI53301 CLK_SEL line, on GP27 via a
-// board mod). Selects whether the LMX2595 is fed by the on-board oscillator or
-// an external reference. No-op on boards without a switchable clock.
-message SetClockSourceRequest {
-  bool internal = 1;  // false = external clock, true = internal on-board oscillator
-}
-
 message SetChannelsEnabledRequest {
   bool enabled = 1;
 }
@@ -109,8 +115,6 @@ message SetRfSwitchChannelRequest {
 message SetCalibrationEnabledResponse {}
 
 message SetCalSourceResponse {}
-
-message SetClockSourceResponse {}
 
 message SetAttenuationResponse {}
 
@@ -164,10 +168,13 @@ message GetStatusResponse {
   // CAL_ATT attenuator). Distinct from attenuation_db, which is the frontend
   // attenuator. Meaningless on variants without a cal attenuator.
   int32 cal_attenuation_db = 11;
-  // STRAPS reference-clock source: true = internal on-board oscillator,
-  // false = external. Meaningless on variants without a switchable clock.
-  // (Firmware read-back pending — see the DIVERGENCE note at the top.)
-  bool clock_source_internal = 12;
+  // STRAPS reference-clock source: true = external, false = internal on-board
+  // oscillator (inverted vs cal_source_internal). Reserved to match rf-control.
+  bool clock_source_external = 12;
+  // Barracuda: ADF4159 MUXOUT digital lock-detect (true = PLL locked).
+  bool pll_locked = 13;
+  // Barracuda: LMK05318B locked to the 10 MHz reference (false = holdover/free-run).
+  bool ref_locked = 14;
 }
 
 message GetConfigRequest {}
@@ -212,6 +219,88 @@ message ErrorResponse {
   string detail = 2;  // short human-readable context; may be empty
 }
 
+// STRAPS reference-clock source select (SI53301 CLK_SEL). Reserved here to match
+// the rf-control host library, which defined these tags (30/31) ahead of the
+// firmware. No handler yet → a device replies ERROR_CODE_UNSUPPORTED until one
+// lands. `external` is the OPPOSITE sense to SetCalSource.internal.
+message SetClockSourceRequest {
+  bool external = 1;  // false = internal on-board oscillator, true = external clock
+}
+message SetClockSourceResponse {}
+
+// LMX2595 LO synthesizer output (Barracuda). 0 powers the synth down. Distinct
+// from SetPllFrequency, which targets the ADF4159/HMC733 VCO chain.
+message SetLoFrequencyRequest {
+  int32 frequency_mhz = 1;
+}
+message SetLoFrequencyResponse {}
+
+// FMCW chirp control for the ADF4159 direct-modulation PLL (Barracuda). Programs
+// the ramp and (dis)arms it. With enabled=false the PLL holds a CW tone at
+// start_freq_mhz.
+message SetChirpRequest {
+  int32 start_freq_mhz = 1;  // VCO output at ramp start
+  int32 deviation_mhz  = 2;  // chirp bandwidth (e.g. 1500 for 1.5 GHz)
+  uint32 ramp_time_us  = 3;  // ramp duration in microseconds (e.g. 35)
+  ChirpMode mode       = 4;
+  bool enabled         = 5;  // true = arm/run the ramp, false = CW at start freq
+}
+message SetChirpResponse {
+  bool locked = 1;           // ADF4159 reported lock after programming
+}
+
+// Fine (0.25 dB) attenuation for the HMC1119 DSA (Barracuda). quarter_db is in
+// 0.25 dB units, 0…127 (0…31.75 dB); distinct from SetAttenuation (whole dB).
+message SetDsaAttenuationRequest {
+  int32 quarter_db = 1;
+}
+message SetDsaAttenuationResponse {}
+
+// UDP network auto-discovery (port 5001). A discoverer broadcasts one datagram
+// containing a Packet{discovery_request}; every device answers with ONE unicast
+// datagram (Packet{discovery_response}) back to the sender's ip:port. There is no
+// length framing — the datagram boundary is the message boundary. Devices reply
+// to both limited (255.255.255.255) and subnet-directed broadcasts. See discovery.c.
+message DiscoveryRequest {}
+
+message DiscoveryResponse {
+  string board = 1;             // firmware target name, e.g. "whalepod_automation"
+  string firmware_version = 2;  // build version string
+  bytes  mac = 3;               // 6 bytes
+  bytes  ip = 4;                // 4 bytes, network order
+  uint32 control_port = 5;      // TCP port of the protobuf control server (5000)
+  string serial = 6;            // EEPROM serial if provisioned, else RP2 unique-id hex
+  string name = 7;              // optional friendly name (empty if unset)
+}
+
+// ── GPIO self-test (diagnostic) ──────────────────────────────────────────────
+// Drives every board control pin LOW then HIGH, reading the pad input buffer
+// back each time (the actual pin voltage — see gpio_verify.c), to find a control
+// line that can't follow its output: shorted to a rail, a dead driver, or an
+// external fault. DISRUPTIVE — it momentarily toggles power-enable / select /
+// chip-select lines — so the firmware snapshots and restores each pin as it goes
+// and re-asserts the latched attenuator state at the end. For bench bring-up and
+// field fault-finding.
+enum GpioStuckState {
+  GPIO_STUCK_STATE_NONE = 0;  // pin toggled cleanly in both directions
+  GPIO_STUCK_STATE_LOW  = 1;  // driven HIGH but read LOW  (stuck low / shorted to GND)
+  GPIO_STUCK_STATE_HIGH = 2;  // driven LOW  but read HIGH (stuck high / shorted to a rail)
+}
+
+message GpioPinResult {
+  uint32 pin = 1;             // RP2040 GPIO number
+  string name = 2;            // board signal name, e.g. "CAL_SW"
+  bool passed = 3;            // true = toggled cleanly both ways
+  GpioStuckState stuck = 4;   // failure direction; NONE when passed
+}
+
+message GpioSelfTestRequest {}
+
+message GpioSelfTestResponse {
+  bool all_passed = 1;
+  repeated GpioPinResult pins = 2;
+}
+
 // Packet message with all request and response types
 message Packet {
   oneof message_id {
@@ -246,5 +335,21 @@ message Packet {
     ErrorResponse error_response = 29;
     SetClockSourceRequest set_clock_source_request = 30;
     SetClockSourceResponse set_clock_source_response = 31;
+    SetLoFrequencyRequest set_lo_frequency_request = 32;
+    SetLoFrequencyResponse set_lo_frequency_response = 33;
+    SetChirpRequest set_chirp_request = 34;
+    SetChirpResponse set_chirp_response = 35;
+    SetDsaAttenuationRequest set_dsa_attenuation_request = 36;
+    SetDsaAttenuationResponse set_dsa_attenuation_response = 37;
+    // Network auto-discovery. Tags 30-37 are already claimed (SetClockSource +
+    // the Barracuda verbs) and must stay identical to the rf-control host
+    // library's control.proto, so discovery takes the next free pair.
+    DiscoveryRequest discovery_request = 38;
+    DiscoveryResponse discovery_response = 39;
+    // GPIO self-test diagnostic. Tags 40-47 are reserved for the pending
+    // firmware-update (OTA) work on another branch, so this takes 48/49 to avoid
+    // a wire-tag collision when those branches merge.
+    GpioSelfTestRequest gpio_self_test_request = 48;
+    GpioSelfTestResponse gpio_self_test_response = 49;
   }
 }

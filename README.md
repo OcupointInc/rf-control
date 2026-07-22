@@ -128,6 +128,7 @@ rf-control set-cal-source internal  # whalepod cal source (CAL_SEL): internal|ex
 rf-control set-clock internal     # STRAPS reference clock (SI53301 CLK_SEL): internal|external
 rf-control set-pll 3500            # tune the STRAPS LMX2595 LO, in MHz
 rf-control set-band 1800-2700     # STRAPS band preset: switches + LO in one shot
+rf-control gpio-selftest          # drive every control pin both ways, read back (alias: selftest)
 ```
 
 On the Whalepod the internal noise-source amplifier only turns on when
@@ -171,6 +172,8 @@ set-clock <internal|external>
                        — firmware handler pending (replies unsupported for now)
 set-pll <MHz>          Tune the STRAPS LMX2595 LO
 set-band <band>        Apply a STRAPS band preset (switches + LO)
+gpio-selftest          Run the control-GPIO diagnostic (alias: selftest);
+                       exits 5 if any pin is stuck
 ```
 
 ## Exit codes
@@ -186,12 +189,126 @@ transport is even opened — so a typo never half-configures the hardware.
 2  invalid input (unknown command, bad flag, or bad argument value)
 3  could not reach the device (connection refused, timeout, USB gone)
 4  the device received the request but rejected it (firmware ErrorCode printed)
+5  a diagnostic ran but found a hardware fault (gpio-selftest: a stuck pin)
 ```
+
+Code 5 is distinct on purpose: the command reached the device and it answered
+successfully — the *result* of the diagnostic is a fault, not a rejected request
+(code 4) or an unreachable device (code 3). Only `gpio-selftest` uses it today.
 
 Code 4 carries the firmware's machine-readable reason. When importing the Go
 `client` package directly, that reason is a typed `*client.DeviceError` (with a
 `Code` field) and an unreachable device is a `*client.TransportError` — use
 `errors.As` to branch on them.
+
+## Hardware faults: readback-verified GPIO writes
+
+Firmware **≥ 1.1.0** verifies every control-GPIO write. Older firmware acked a
+`set-*` command the instant it updated the MCU's output latch — an ack meant "I
+ran the write", not "the pad actually moved". Now the firmware drives the pin,
+lets it settle, reads the pad back three times, and requires all three reads to
+match the commanded level; on a mismatch it re-inits the pin and retries (three
+attempts total). If a pad still never reaches the commanded level — a stuck
+output driver, a shorted trace, a glitch that flipped the pin direction — the
+command is answered with `ERROR_CODE_HARDWARE_ERROR` naming the offending pin
+instead of the normal ack.
+
+So on firmware ≥ 1.1.0, **a clean ack now means the MCU pad physically reached
+the commanded level.**
+
+At the CLI a stuck pin fails the command, prints the device's reason, and exits
+`4`:
+
+```console
+$ rf-control --ip 192.168.1.50 set-rf-switch 3
+Error: the device rejected the request: device error: gpio12 readback mismatch (ERROR_CODE_HARDWARE_ERROR)
+$ echo $?
+4
+```
+
+At the library level the same fault is a typed `*client.DeviceError`. Two
+helpers make it first-class — `client.IsHardwareError` and
+`client.GPIOFaultPin`:
+
+```go
+if err := c.SetRfSwitchChannel(3); err != nil {
+    if pin, ok := client.GPIOFaultPin(err); ok {
+        // A control pad is stuck. pin is the GPIO number the firmware named.
+        log.Fatalf("control pin gpio%d failed readback — the write did not take effect", pin)
+    }
+    if client.IsHardwareError(err) {
+        // Hardware fault without a specific pin (e.g. an SPI/I2C failure).
+        log.Fatalf("device hardware error: %v", err)
+    }
+    log.Fatal(err) // transport error, or the device refused the request for another reason
+}
+```
+
+`GPIOFaultPin` only matches the firmware's exact `gpio<N> readback mismatch`
+detail, so it returns `(0, false)` for any other hardware error;
+`IsHardwareError` covers `ERROR_CODE_HARDWARE_ERROR` in general.
+
+**Caveat:** readback proves the *MCU pad* moved — nothing downstream of it. A
+passing ack while the RF is still dead means the fault lies past the pin (the
+switch/attenuator IC, its supply, or the RF path itself), not in the GPIO drive
+the firmware can see.
+
+## GPIO self-test (`gpio-selftest`)
+
+Where the readback check above catches a stuck pad *when you happen to write to
+it*, `gpio-selftest` sweeps the whole control-GPIO bank on demand. The firmware
+drives every board control pin **low, then high**, reading the pad input buffer
+back each way, and reports per-pin pass/fail with the stuck direction. Firmware
+**≥ 1.1.0**. Alias: `selftest`.
+
+```console
+$ rf-control --ip 192.168.1.50 gpio-selftest
+GPIO self-test — 8 pins
+  GPIO  0  PWR_EN      PASS
+  GPIO  2  SCK         PASS
+  GPIO  3  MOSI        PASS
+  GPIO  7  CS_VHF      PASS
+  GPIO  8  CS_UHF      PASS
+  GPIO 12  CAL_SW      FAIL  (stuck LOW)
+           ↳ Calibration switch is stuck in CALIBRATION mode — the unit can't return to the normal RF signal path, so live signals never reach the output.
+  GPIO 15  CAL_AMP_EN  PASS
+  GPIO  9  CLOCK_EN    PASS
+Result: FAIL — 1 of 8 pin(s) stuck
+$ echo $?
+5
+```
+
+(The pins above are the whalepod_automation control set; other boards sweep
+their own.) A passing pin prints `PASS`; a stuck one prints `FAIL  (stuck LOW)`
+or `FAIL  (stuck HIGH)` — `LOW` means the firmware could not drive it high (held
+low: shorted to ground / a dead driver), `HIGH` means it could not drive it low
+(held high: shorted to a rail). When every pin passes the last line is
+`Result: PASS — all N pin(s) ok` and the command exits `0`; any stuck pin exits
+`5` (see [Exit codes](#exit-codes)).
+
+On Whalepod-family boards each stuck pin also gets an indented `↳` line
+translating the fault into its plain-English consequence — what the operator
+actually loses (as with `CAL_SW` above). These consequence messages are
+**whalepod-specific**; on other boards the table prints the pass/fail rows
+without them. The same text is available programmatically from
+`client.GpioFaultDescription(board, pinName, stuck)`.
+
+**This is disruptive.** It momentarily toggles power-enable and select lines
+(CAL_SW, chip-selects, `PWR_EN`, …), so don't run it mid-measurement. The
+firmware snapshots and restores each pin as it goes and re-asserts the latched
+attenuator state at the end, so the RF is left at its boot defaults rather than
+whatever you had configured — re-apply your settings afterward.
+
+**Caveat (same as above):** the self-test proves each *MCU pad* can move in both
+directions. It says nothing about anything downstream — a broken trace, a failed
+switch/attenuator IC, or a dead RF path will still read `PASS` here because the
+pad itself toggles fine. Use it to rule the MCU GPIO in or out, not to bless the
+whole signal chain.
+
+From Go, the same data is available structurally — `Client.GpioSelfTest()`
+returns a `*controlpb.GpioSelfTestResponse` (`AllPassed` plus a `Pins` slice of
+`{Pin, Name, Passed, Stuck}`); `AllPassed == false` is a normal result to
+inspect, not an error.
 
 ## Transport selection
 
