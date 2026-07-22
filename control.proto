@@ -290,8 +290,14 @@ enum GpioStuckState {
 message GpioPinResult {
   uint32 pin = 1;             // RP2040 GPIO number
   string name = 2;            // board signal name, e.g. "CAL_SW"
-  bool passed = 3;            // true = toggled cleanly both ways
+  bool passed = 3;            // true = toggled cleanly both ways (at some drive)
   GpioStuckState stuck = 4;   // failure direction; NONE when passed
+  // Lowest pad drive strength (nominal mA: 2/4/8/12) at which the pin toggled
+  // cleanly both ways during the drive sweep; 0 = failed even at 12 mA. A value
+  // above the board default (4 mA, or 12 mA for switch lines) means the pad is
+  // marginal — flux/leakage the firmware can still drive through, but a sign the
+  // board is degrading. See gpio_verify.c gpio_selftest_sweep().
+  uint32 min_drive_ma = 5;
 }
 
 message GpioSelfTestRequest {}

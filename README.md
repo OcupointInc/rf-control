@@ -258,21 +258,23 @@ the firmware can see.
 Where the readback check above catches a stuck pad *when you happen to write to
 it*, `gpio-selftest` sweeps the whole control-GPIO bank on demand. The firmware
 drives every board control pin **low, then high**, reading the pad input buffer
-back each way, and reports per-pin pass/fail with the stuck direction. Firmware
-**≥ 1.1.0**. Alias: `selftest`.
+back each way, and reports per-pin pass/fail with the stuck direction. It also
+**sweeps the pad drive strength** (2 → 4 → 8 → 12 mA) and reports the *lowest*
+drive at which each pin toggled cleanly — an early-warning signal, described
+below. Firmware **≥ 1.1.0**. Alias: `selftest`.
 
 ```console
-$ rf-control --ip 192.168.1.50 gpio-selftest
+$ rf-control --ip 192.168.1.50 gpio-selftest --pins
 GPIO self-test — 8 pins
-  GPIO  0  PWR_EN      PASS
-  GPIO  2  SCK         PASS
-  GPIO  3  MOSI        PASS
-  GPIO  7  CS_VHF      PASS
-  GPIO  8  CS_UHF      PASS
+  GPIO  0  PWR_EN      PASS  (needs 4 mA)
+  GPIO  2  SCK         PASS  (needs 4 mA)
+  GPIO  3  MOSI        PASS  (needs 4 mA)
+  GPIO  7  CS_VHF      PASS  (needs 4 mA)
+  GPIO  8  CS_UHF      PASS  (needs 4 mA)
   GPIO 12  CAL_SW      FAIL  (stuck LOW)
            ↳ Calibration switch is stuck in CALIBRATION mode — the unit can't return to the normal RF signal path, so live signals never reach the output.
-  GPIO 15  CAL_AMP_EN  PASS
-  GPIO  9  CLOCK_EN    PASS
+  GPIO 15  CAL_AMP_EN  PASS  (needs 4 mA)
+  GPIO  9  CLOCK_EN    PASS  (needs 4 mA)
 Result: FAIL — 1 of 8 pin(s) stuck
 $ echo $?
 5
@@ -285,6 +287,39 @@ low: shorted to ground / a dead driver), `HIGH` means it could not drive it low
 (held high: shorted to a rail). When every pin passes the last line is
 `Result: PASS — all N pin(s) ok` and the command exits `0`; any stuck pin exits
 `5` (see [Exit codes](#exit-codes)).
+
+### Drive-strength reporting (early-warning)
+
+Each `PASS` also carries the **lowest pad drive** the pin needed to toggle
+cleanly — `PASS  (needs 4 mA)` above. Most pins are configured at a 4 mA
+default; the switch/select lines (`CAL_SW`, `CAL_SEL`, `RF_SW`, `MIXER_SW`,
+`IF_SW`, `SW_V1`–`SW_V4`, `SW_LS`) run at 12 mA. A pin that only passes **above
+its default** is *marginal*: the firmware can still drive it at runtime, but the
+extra drive it took usually means flux residue, a hairline short, or leakage on
+that net — a board that's starting to degrade. `min_drive_ma = 0` is not a drive
+value; it means the pin failed even at 12 mA (a hard fault, shown as `FAIL`).
+
+In the raw `--pins` table every `PASS` shows its drive. The default grouped
+subsystem view stays clean when the board is healthy and only calls out drive
+when it's above default: the subsystem is flagged `PASS (marginal: needs N mA)`,
+the offending pin is named on a continuation line, and a one-line advisory
+follows the `Result` line.
+
+```console
+$ rf-control --ip 192.168.1.50 gpio-selftest
+GPIO self-test — whalepod_automation: PASS
+  Power enable                  PASS
+  Attenuator control (VHF/UHF)  PASS (marginal: needs 8 mA)
+      ↳ CS_VHF (GPIO 7) passed only at 8 mA (default 4 mA)
+  Calibration enable            PASS
+  Calibration source select     PASS
+  Clock enable                  PASS
+Result: PASS
+Note: 1 pin needed elevated drive (possible flux/leakage — consider cleaning/rework).
+```
+
+A marginal pin still **passes** — the command exits `0`. Treat the note as a cue
+to inspect/clean/rework that net before it becomes a hard fault, not as a failure.
 
 On Whalepod-family boards each stuck pin also gets an indented `↳` line
 translating the fault into its plain-English consequence — what the operator
@@ -307,8 +342,9 @@ whole signal chain.
 
 From Go, the same data is available structurally — `Client.GpioSelfTest()`
 returns a `*controlpb.GpioSelfTestResponse` (`AllPassed` plus a `Pins` slice of
-`{Pin, Name, Passed, Stuck}`); `AllPassed == false` is a normal result to
-inspect, not an error.
+`{Pin, Name, Passed, Stuck, MinDriveMa}`, where `MinDriveMa` is the lowest drive
+in mA the pin passed at, or `0` if it failed); `AllPassed == false` is a normal
+result to inspect, not an error.
 
 ## Transport selection
 

@@ -377,6 +377,58 @@ func stuckWord(s pb.GpioStuckState) string {
 	}
 }
 
+// switchControlPins are the Whalepod control lines the firmware configures at
+// 12 mA pad drive (the switch/select bank) rather than the 4 mA default. Needing
+// a high drive is therefore *expected* for these, so they only count as marginal
+// when they fail outright (min_drive_ma == 0) — which the pass/fail path already
+// reports. Keyed by firmware pin `name`. Every other pin defaults to 4 mA, so a
+// value above 4 mA there is the early-warning signal. See gpio_verify.c.
+var switchControlPins = map[string]bool{
+	"CAL_SW": true, "CAL_SEL": true, "RF_SW": true, "MIXER_SW": true,
+	"IF_SW": true, "SW_V1": true, "SW_V2": true, "SW_V3": true, "SW_V4": true,
+	"SW_LS": true,
+}
+
+// driveNote returns a short "needs N mA" note when a PASSING pin required a pad
+// drive strength above its board default — flux/leakage the firmware can still
+// drive through, but an early sign the board is degrading. It returns "" when
+// there is nothing notable: a pin that passed at (or below) its expected default,
+// a 12 mA switch-control line, or a pin with no drive data / an outright failure
+// (min_drive_ma == 0, already surfaced as FAIL). This is the single place the
+// "expected default" policy lives so both self-test views agree.
+func driveNote(name string, minDriveMa uint32) string {
+	if minDriveMa == 0 {
+		return "" // failed, or firmware too old to report drive — not "marginal"
+	}
+	if switchControlPins[name] {
+		return "" // 12 mA by design; only notable if it fails
+	}
+	if minDriveMa > 4 {
+		return fmt.Sprintf("needs %d mA", minDriveMa)
+	}
+	return ""
+}
+
+// marginalAdvisory returns the one-line note appended after the Result line when
+// any PASSING pin needed an above-default drive, or "" when none did. Shared by
+// both the flat and grouped self-test views so the advisory reads identically.
+func marginalAdvisory(pins []*pb.GpioPinResult) string {
+	n := 0
+	for _, p := range pins {
+		if p.GetPassed() && driveNote(p.GetName(), p.GetMinDriveMa()) != "" {
+			n++
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	noun := "pin"
+	if n > 1 {
+		noun = "pins"
+	}
+	return fmt.Sprintf("Note: %d %s needed elevated drive (possible flux/leakage — consider cleaning/rework).\n", n, noun)
+}
+
 // formatGPIOSelfTest renders a GpioSelfTestResponse as an aligned, human-readable
 // table followed by a summary Result line. It's factored out of cmdGpioSelfTest
 // so the formatting can be unit-tested without a transport. Columns (GPIO number
@@ -409,7 +461,14 @@ func formatGPIOSelfTest(board string, resp *pb.GpioSelfTestResponse) string {
 	stuck := 0
 	for _, p := range pins {
 		status := "PASS"
-		if !p.GetPassed() {
+		if p.GetPassed() {
+			// Raw table always reports the drive a passing pin needed, so a
+			// creeping requirement is visible pin-by-pin (0 = firmware too old
+			// to report it — omit rather than print "needs 0 mA").
+			if md := p.GetMinDriveMa(); md > 0 {
+				status = fmt.Sprintf("PASS  (needs %d mA)", md)
+			}
+		} else {
 			stuck++
 			status = "FAIL  (stuck " + stuckWord(p.GetStuck()) + ")"
 		}
@@ -426,6 +485,7 @@ func formatGPIOSelfTest(board string, resp *pb.GpioSelfTestResponse) string {
 	} else {
 		fmt.Fprintf(&b, "Result: FAIL — %d of %d pin(s) stuck\n", stuck, len(pins))
 	}
+	b.WriteString(marginalAdvisory(pins))
 	return b.String()
 }
 
@@ -519,7 +579,29 @@ func formatGPIOSelfTestGrouped(board string, resp *pb.GpioSelfTestResponse) stri
 			}
 		}
 		if !failed {
-			fmt.Fprintf(&b, "  %-*s  PASS\n", nameW, g.name)
+			// The subsystem passed, but flag it if any pad needed an
+			// above-default drive: headline the worst offender on the subsystem
+			// line and name each marginal pin on its own continuation, so a
+			// degrading-but-still-working board is visible without a full FAIL.
+			var marg []*pb.GpioPinResult
+			worst := uint32(0)
+			for _, p := range g.members {
+				if driveNote(p.GetName(), p.GetMinDriveMa()) != "" {
+					marg = append(marg, p)
+					if p.GetMinDriveMa() > worst {
+						worst = p.GetMinDriveMa()
+					}
+				}
+			}
+			if len(marg) == 0 {
+				fmt.Fprintf(&b, "  %-*s  PASS\n", nameW, g.name)
+				continue
+			}
+			fmt.Fprintf(&b, "  %-*s  PASS (marginal: needs %d mA)\n", nameW, g.name, worst)
+			for _, p := range marg {
+				fmt.Fprintf(&b, "      ↳ %s (GPIO %d) passed only at %d mA (default 4 mA)\n",
+					p.GetName(), p.GetPin(), p.GetMinDriveMa())
+			}
 			continue
 		}
 		fmt.Fprintf(&b, "  %-*s  FAIL\n", nameW, g.name)
@@ -555,6 +637,11 @@ func formatGPIOSelfTestGrouped(board string, resp *pb.GpioSelfTestResponse) stri
 			if !p.GetPassed() {
 				stuck++
 				status = "FAIL  (stuck " + stuckWord(p.GetStuck()) + ")"
+			} else if note := driveNote(p.GetName(), p.GetMinDriveMa()); note != "" {
+				// Passing member of a failing subsystem — keep healthy members a
+				// bare PASS, but surface one that's marginal (grouped view only
+				// annotates drive above the default; the --pins table shows all).
+				status = "PASS  (" + note + ")"
 			}
 			fmt.Fprintf(&b, "      %-*s %-*s  %s\n", mnameW, p.GetName(), labelW, labels[i], status)
 			if !p.GetPassed() {
@@ -570,6 +657,7 @@ func formatGPIOSelfTestGrouped(board string, resp *pb.GpioSelfTestResponse) stri
 	} else {
 		fmt.Fprintf(&b, "Result: FAIL — %d of %d pin(s) stuck\n", stuck, len(pins))
 	}
+	b.WriteString(marginalAdvisory(pins))
 	return b.String()
 }
 

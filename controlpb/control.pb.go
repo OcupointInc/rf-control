@@ -2366,11 +2366,17 @@ func (x *DiscoveryResponse) GetName() string {
 }
 
 type GpioPinResult struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Pin           uint32                 `protobuf:"varint,1,opt,name=pin,proto3" json:"pin,omitempty"`                                 // RP2040 GPIO number
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                                // board signal name, e.g. "CAL_SW"
-	Passed        bool                   `protobuf:"varint,3,opt,name=passed,proto3" json:"passed,omitempty"`                           // true = toggled cleanly both ways
-	Stuck         GpioStuckState         `protobuf:"varint,4,opt,name=stuck,proto3,enum=control.GpioStuckState" json:"stuck,omitempty"` // failure direction; NONE when passed
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Pin    uint32                 `protobuf:"varint,1,opt,name=pin,proto3" json:"pin,omitempty"`                                 // RP2040 GPIO number
+	Name   string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                                // board signal name, e.g. "CAL_SW"
+	Passed bool                   `protobuf:"varint,3,opt,name=passed,proto3" json:"passed,omitempty"`                           // true = toggled cleanly both ways (at some drive)
+	Stuck  GpioStuckState         `protobuf:"varint,4,opt,name=stuck,proto3,enum=control.GpioStuckState" json:"stuck,omitempty"` // failure direction; NONE when passed
+	// Lowest pad drive strength (nominal mA: 2/4/8/12) at which the pin toggled
+	// cleanly both ways during the drive sweep; 0 = failed even at 12 mA. A value
+	// above the board default (4 mA, or 12 mA for switch lines) means the pad is
+	// marginal — flux/leakage the firmware can still drive through, but a sign the
+	// board is degrading. See gpio_verify.c gpio_selftest_sweep().
+	MinDriveMa    uint32 `protobuf:"varint,5,opt,name=min_drive_ma,json=minDriveMa,proto3" json:"min_drive_ma,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2431,6 +2437,13 @@ func (x *GpioPinResult) GetStuck() GpioStuckState {
 		return x.Stuck
 	}
 	return GpioStuckState_GPIO_STUCK_STATE_NONE
+}
+
+func (x *GpioPinResult) GetMinDriveMa() uint32 {
+	if x != nil {
+		return x.MinDriveMa
+	}
+	return 0
 }
 
 type GpioSelfTestRequest struct {
@@ -3349,12 +3362,14 @@ const file_control_proto_rawDesc = "" +
 	"\x02ip\x18\x04 \x01(\fR\x02ip\x12!\n" +
 	"\fcontrol_port\x18\x05 \x01(\rR\vcontrolPort\x12\x16\n" +
 	"\x06serial\x18\x06 \x01(\tR\x06serial\x12\x12\n" +
-	"\x04name\x18\a \x01(\tR\x04name\"|\n" +
+	"\x04name\x18\a \x01(\tR\x04name\"\x9e\x01\n" +
 	"\rGpioPinResult\x12\x10\n" +
 	"\x03pin\x18\x01 \x01(\rR\x03pin\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
 	"\x06passed\x18\x03 \x01(\bR\x06passed\x12-\n" +
-	"\x05stuck\x18\x04 \x01(\x0e2\x17.control.GpioStuckStateR\x05stuck\"\x15\n" +
+	"\x05stuck\x18\x04 \x01(\x0e2\x17.control.GpioStuckStateR\x05stuck\x12 \n" +
+	"\fmin_drive_ma\x18\x05 \x01(\rR\n" +
+	"minDriveMa\"\x15\n" +
 	"\x13GpioSelfTestRequest\"a\n" +
 	"\x14GpioSelfTestResponse\x12\x1d\n" +
 	"\n" +
