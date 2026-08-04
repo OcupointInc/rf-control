@@ -17,6 +17,12 @@
 // yet, so a device replies ERROR_CODE_UNSUPPORTED until the handler lands; when
 // it does, mirror these additions into the canonical proto with the SAME tags.
 //
+// TAG GAP: the Packet oneof jumps from 37 to 52. Tags 38-51 belong to canonical
+// firmware messages this copy has not been synced with yet (40-47 are reserved
+// for OTA); the ADF4159 extended-control block at 52-61 was added here from the
+// shared wire spec without back-filling them. Never reuse 38-51 for something
+// else — the tag numbers, not their contiguity, are what has to match.
+//
 // POLARITY: both fields carry `external` sense — true = external reference,
 // false = internal on-board oscillator. This is the OPPOSITE of the adjacent
 // cal_source_internal / SetCalSourceRequest.internal fields, and it was chosen
@@ -351,6 +357,56 @@ func (x ErrorCode) Number() protoreflect.EnumNumber {
 // Deprecated: Use ErrorCode.Descriptor instead.
 func (ErrorCode) EnumDescriptor() ([]byte, []int) {
 	return file_control_proto_rawDescGZIP(), []int{5}
+}
+
+// ADF4159 output-phase control (Barracuda).
+type PhaseMode int32
+
+const (
+	PhaseMode_PHASE_MODE_OFF    PhaseMode = 0 // PSK and phase adjust disabled, phase word cleared
+	PhaseMode_PHASE_MODE_PSK    PhaseMode = 1 // PSK via TXDATA: +phase when high, −phase when low
+	PhaseMode_PHASE_MODE_STATIC PhaseMode = 2 // one-shot static phase increment (relative to current phase)
+)
+
+// Enum value maps for PhaseMode.
+var (
+	PhaseMode_name = map[int32]string{
+		0: "PHASE_MODE_OFF",
+		1: "PHASE_MODE_PSK",
+		2: "PHASE_MODE_STATIC",
+	}
+	PhaseMode_value = map[string]int32{
+		"PHASE_MODE_OFF":    0,
+		"PHASE_MODE_PSK":    1,
+		"PHASE_MODE_STATIC": 2,
+	}
+)
+
+func (x PhaseMode) Enum() *PhaseMode {
+	p := new(PhaseMode)
+	*p = x
+	return p
+}
+
+func (x PhaseMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PhaseMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_control_proto_enumTypes[6].Descriptor()
+}
+
+func (PhaseMode) Type() protoreflect.EnumType {
+	return &file_control_proto_enumTypes[6]
+}
+
+func (x PhaseMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PhaseMode.Descriptor instead.
+func (PhaseMode) EnumDescriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{6}
 }
 
 type SetPllFrequencyRequest struct {
@@ -1984,14 +2040,31 @@ func (*SetLoFrequencyResponse) Descriptor() ([]byte, []int) {
 // the ramp and (dis)arms it. With enabled=false the PLL holds a CW tone at
 // start_freq_mhz.
 type SetChirpRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	StartFreqMhz  int32                  `protobuf:"varint,1,opt,name=start_freq_mhz,json=startFreqMhz,proto3" json:"start_freq_mhz,omitempty"` // VCO output at ramp start
-	DeviationMhz  int32                  `protobuf:"varint,2,opt,name=deviation_mhz,json=deviationMhz,proto3" json:"deviation_mhz,omitempty"`   // chirp bandwidth (e.g. 1500 for 1.5 GHz)
-	RampTimeUs    uint32                 `protobuf:"varint,3,opt,name=ramp_time_us,json=rampTimeUs,proto3" json:"ramp_time_us,omitempty"`       // ramp duration in microseconds (e.g. 35)
-	Mode          ChirpMode              `protobuf:"varint,4,opt,name=mode,proto3,enum=control.ChirpMode" json:"mode,omitempty"`
-	Enabled       bool                   `protobuf:"varint,5,opt,name=enabled,proto3" json:"enabled,omitempty"` // true = arm/run the ramp, false = CW at start freq
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	StartFreqMhz int32                  `protobuf:"varint,1,opt,name=start_freq_mhz,json=startFreqMhz,proto3" json:"start_freq_mhz,omitempty"` // VCO output at ramp start
+	DeviationMhz int32                  `protobuf:"varint,2,opt,name=deviation_mhz,json=deviationMhz,proto3" json:"deviation_mhz,omitempty"`   // chirp bandwidth (e.g. 1500 for 1.5 GHz)
+	RampTimeUs   uint32                 `protobuf:"varint,3,opt,name=ramp_time_us,json=rampTimeUs,proto3" json:"ramp_time_us,omitempty"`       // ramp duration in microseconds (e.g. 35)
+	Mode         ChirpMode              `protobuf:"varint,4,opt,name=mode,proto3,enum=control.ChirpMode" json:"mode,omitempty"`
+	Enabled      bool                   `protobuf:"varint,5,opt,name=enabled,proto3" json:"enabled,omitempty"` // true = arm/run the ramp, false = CW at start freq
+	// ── Extended waveform options (all zero/false = the classic 5-field chirp) ──
+	Parabolic bool `protobuf:"varint,6,opt,name=parabolic,proto3" json:"parabolic,omitempty"` // nonlinear ramp (§10.5); deviation_mhz is the TOTAL span.
+	// Mutually exclusive with dual_ramp/fast_ramp.
+	DualRamp           bool   `protobuf:"varint,7,opt,name=dual_ramp,json=dualRamp,proto3" json:"dual_ramp,omitempty"`                              // second ramp rate in bank 1 (fields 8/9)
+	Ramp2DeviationMhz  int32  `protobuf:"varint,8,opt,name=ramp2_deviation_mhz,json=ramp2DeviationMhz,proto3" json:"ramp2_deviation_mhz,omitempty"` // dual ramp: bank-1 sweep span
+	Ramp2TimeUs        uint32 `protobuf:"varint,9,opt,name=ramp2_time_us,json=ramp2TimeUs,proto3" json:"ramp2_time_us,omitempty"`                   // dual ramp: bank-1 ramp time
+	FastRamp           bool   `protobuf:"varint,10,opt,name=fast_ramp,json=fastRamp,proto3" json:"fast_ramp,omitempty"`                             // two-slope triangular; down-slope time in field 11
+	FastRampDownTimeUs uint32 `protobuf:"varint,11,opt,name=fast_ramp_down_time_us,json=fastRampDownTimeUs,proto3" json:"fast_ramp_down_time_us,omitempty"`
+	FskOnRampKhz       uint32 `protobuf:"varint,12,opt,name=fsk_on_ramp_khz,json=fskOnRampKhz,proto3" json:"fsk_on_ramp_khz,omitempty"`                 // FSK deviation superimposed on the ramp; 0 = off
+	DelayedStart       bool   `protobuf:"varint,13,opt,name=delayed_start,json=delayedStart,proto3" json:"delayed_start,omitempty"`                     // delay ramp start by delay_us
+	RampDelay          bool   `protobuf:"varint,14,opt,name=ramp_delay,json=rampDelay,proto3" json:"ramp_delay,omitempty"`                              // dwell of delay_us between ramps
+	DelayUs            uint32 `protobuf:"varint,15,opt,name=delay_us,json=delayUs,proto3" json:"delay_us,omitempty"`                                    // duration used by fields 13/14/17
+	TriangularDelay    bool   `protobuf:"varint,16,opt,name=triangular_delay,json=triangularDelay,proto3" json:"triangular_delay,omitempty"`            // clipped triangular (requires ramp_delay + a triangle mode)
+	TxdataTriggerDelay bool   `protobuf:"varint,17,opt,name=txdata_trigger_delay,json=txdataTriggerDelay,proto3" json:"txdata_trigger_delay,omitempty"` // apply delay_us when TXDATA triggers a ramp
+	ExternalStepClock  bool   `protobuf:"varint,18,opt,name=external_step_clock,json=externalStepClock,proto3" json:"external_step_clock,omitempty"`    // TXDATA pin advances each ramp step (no internal clock)
+	TxdataInvert       bool   `protobuf:"varint,19,opt,name=txdata_invert,json=txdataInvert,proto3" json:"txdata_invert,omitempty"`                     // TXDATA events on the falling edge
+	MuxoutRampComplete bool   `protobuf:"varint,20,opt,name=muxout_ramp_complete,json=muxoutRampComplete,proto3" json:"muxout_ramp_complete,omitempty"` // route the ramp-complete pulse to MUXOUT
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *SetChirpRequest) Reset() {
@@ -2055,6 +2128,111 @@ func (x *SetChirpRequest) GetMode() ChirpMode {
 func (x *SetChirpRequest) GetEnabled() bool {
 	if x != nil {
 		return x.Enabled
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetParabolic() bool {
+	if x != nil {
+		return x.Parabolic
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetDualRamp() bool {
+	if x != nil {
+		return x.DualRamp
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetRamp2DeviationMhz() int32 {
+	if x != nil {
+		return x.Ramp2DeviationMhz
+	}
+	return 0
+}
+
+func (x *SetChirpRequest) GetRamp2TimeUs() uint32 {
+	if x != nil {
+		return x.Ramp2TimeUs
+	}
+	return 0
+}
+
+func (x *SetChirpRequest) GetFastRamp() bool {
+	if x != nil {
+		return x.FastRamp
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetFastRampDownTimeUs() uint32 {
+	if x != nil {
+		return x.FastRampDownTimeUs
+	}
+	return 0
+}
+
+func (x *SetChirpRequest) GetFskOnRampKhz() uint32 {
+	if x != nil {
+		return x.FskOnRampKhz
+	}
+	return 0
+}
+
+func (x *SetChirpRequest) GetDelayedStart() bool {
+	if x != nil {
+		return x.DelayedStart
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetRampDelay() bool {
+	if x != nil {
+		return x.RampDelay
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetDelayUs() uint32 {
+	if x != nil {
+		return x.DelayUs
+	}
+	return 0
+}
+
+func (x *SetChirpRequest) GetTriangularDelay() bool {
+	if x != nil {
+		return x.TriangularDelay
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetTxdataTriggerDelay() bool {
+	if x != nil {
+		return x.TxdataTriggerDelay
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetExternalStepClock() bool {
+	if x != nil {
+		return x.ExternalStepClock
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetTxdataInvert() bool {
+	if x != nil {
+		return x.TxdataInvert
+	}
+	return false
+}
+
+func (x *SetChirpRequest) GetMuxoutRampComplete() bool {
+	if x != nil {
+		return x.MuxoutRampComplete
 	}
 	return false
 }
@@ -2185,6 +2363,520 @@ func (*SetDsaAttenuationResponse) Descriptor() ([]byte, []int) {
 	return file_control_proto_rawDescGZIP(), []int{36}
 }
 
+// ADF4159 FSK modulation (Barracuda). Programs center + deviation and enables
+// FSK; the data stream itself is applied on the TXDATA pin by external
+// hardware/test equipment. enabled=false reverts to CW at center_freq_mhz.
+type SetFskRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CenterFreqMhz int32                  `protobuf:"varint,1,opt,name=center_freq_mhz,json=centerFreqMhz,proto3" json:"center_freq_mhz,omitempty"`
+	DeviationKhz  uint32                 `protobuf:"varint,2,opt,name=deviation_khz,json=deviationKhz,proto3" json:"deviation_khz,omitempty"` // hop is ±deviation around center
+	Enabled       bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetFskRequest) Reset() {
+	*x = SetFskRequest{}
+	mi := &file_control_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetFskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetFskRequest) ProtoMessage() {}
+
+func (x *SetFskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetFskRequest.ProtoReflect.Descriptor instead.
+func (*SetFskRequest) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *SetFskRequest) GetCenterFreqMhz() int32 {
+	if x != nil {
+		return x.CenterFreqMhz
+	}
+	return 0
+}
+
+func (x *SetFskRequest) GetDeviationKhz() uint32 {
+	if x != nil {
+		return x.DeviationKhz
+	}
+	return 0
+}
+
+func (x *SetFskRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+type SetFskResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetFskResponse) Reset() {
+	*x = SetFskResponse{}
+	mi := &file_control_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetFskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetFskResponse) ProtoMessage() {}
+
+func (x *SetFskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetFskResponse.ProtoReflect.Descriptor instead.
+func (*SetFskResponse) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{38}
+}
+
+type SetPhaseRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Mode              PhaseMode              `protobuf:"varint,1,opt,name=mode,proto3,enum=control.PhaseMode" json:"mode,omitempty"`
+	PhaseMillidegrees int32                  `protobuf:"varint,2,opt,name=phase_millidegrees,json=phaseMillidegrees,proto3" json:"phase_millidegrees,omitempty"` // e.g. 90000 = +90°; hardware resolution 360°/4096
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *SetPhaseRequest) Reset() {
+	*x = SetPhaseRequest{}
+	mi := &file_control_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPhaseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPhaseRequest) ProtoMessage() {}
+
+func (x *SetPhaseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPhaseRequest.ProtoReflect.Descriptor instead.
+func (*SetPhaseRequest) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *SetPhaseRequest) GetMode() PhaseMode {
+	if x != nil {
+		return x.Mode
+	}
+	return PhaseMode_PHASE_MODE_OFF
+}
+
+func (x *SetPhaseRequest) GetPhaseMillidegrees() int32 {
+	if x != nil {
+		return x.PhaseMillidegrees
+	}
+	return 0
+}
+
+type SetPhaseResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPhaseResponse) Reset() {
+	*x = SetPhaseResponse{}
+	mi := &file_control_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPhaseResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPhaseResponse) ProtoMessage() {}
+
+func (x *SetPhaseResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPhaseResponse.ProtoReflect.Descriptor instead.
+func (*SetPhaseResponse) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{40}
+}
+
+// ADF4159 reference-path configuration (Barracuda). f_PFD = REFIN×(1+doubler) /
+// (r_counter×(1+div2)). The firmware revalidates the armed waveform at the new
+// f_PFD and refuses (INVALID_REQUEST) any change that would push the output
+// past the RF ceiling. Requires a frequency to have been programmed first.
+type SetAdfRefConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RCounter      uint32                 `protobuf:"varint,1,opt,name=r_counter,json=rCounter,proto3" json:"r_counter,omitempty"`                  // 1..32
+	RefDoubler    bool                   `protobuf:"varint,2,opt,name=ref_doubler,json=refDoubler,proto3" json:"ref_doubler,omitempty"`            // REFIN ≤ 50 MHz required; CP codes 0..7 only
+	RefDiv2       bool                   `protobuf:"varint,3,opt,name=ref_div2,json=refDiv2,proto3" json:"ref_div2,omitempty"`                     // ÷2 after R counter (50% PFD duty, needed for CSR)
+	Prescaler_8_9 bool                   `protobuf:"varint,4,opt,name=prescaler_8_9,json=prescaler89,proto3" json:"prescaler_8_9,omitempty"`       // false = 4/5 (RF ≤ 8 GHz, INT ≥ 23); true = 8/9 (INT ≥ 75)
+	CpCurrentCode uint32                 `protobuf:"varint,5,opt,name=cp_current_code,json=cpCurrentCode,proto3" json:"cp_current_code,omitempty"` // 0..15, 0.31..5 mA at RSET = 5.1 kΩ
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAdfRefConfigRequest) Reset() {
+	*x = SetAdfRefConfigRequest{}
+	mi := &file_control_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAdfRefConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAdfRefConfigRequest) ProtoMessage() {}
+
+func (x *SetAdfRefConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAdfRefConfigRequest.ProtoReflect.Descriptor instead.
+func (*SetAdfRefConfigRequest) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *SetAdfRefConfigRequest) GetRCounter() uint32 {
+	if x != nil {
+		return x.RCounter
+	}
+	return 0
+}
+
+func (x *SetAdfRefConfigRequest) GetRefDoubler() bool {
+	if x != nil {
+		return x.RefDoubler
+	}
+	return false
+}
+
+func (x *SetAdfRefConfigRequest) GetRefDiv2() bool {
+	if x != nil {
+		return x.RefDiv2
+	}
+	return false
+}
+
+func (x *SetAdfRefConfigRequest) GetPrescaler_8_9() bool {
+	if x != nil {
+		return x.Prescaler_8_9
+	}
+	return false
+}
+
+func (x *SetAdfRefConfigRequest) GetCpCurrentCode() uint32 {
+	if x != nil {
+		return x.CpCurrentCode
+	}
+	return 0
+}
+
+type SetAdfRefConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAdfRefConfigResponse) Reset() {
+	*x = SetAdfRefConfigResponse{}
+	mi := &file_control_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAdfRefConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAdfRefConfigResponse) ProtoMessage() {}
+
+func (x *SetAdfRefConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAdfRefConfigResponse.ProtoReflect.Descriptor instead.
+func (*SetAdfRefConfigResponse) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{42}
+}
+
+// ADF4159 loop-quality features (Barracuda). FULL-STATE: every call applies all
+// five fields; omitted fields fall back to their zero-value (= feature off).
+type SetAdfLoopConfigRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Csr               bool                   `protobuf:"varint,1,opt,name=csr,proto3" json:"csr,omitempty"` // cycle slip reduction (needs CP code 0, +PD polarity)
+	NegativeBleed     bool                   `protobuf:"varint,2,opt,name=negative_bleed,json=negativeBleed,proto3" json:"negative_bleed,omitempty"`
+	NegativeBleedCode uint32                 `protobuf:"varint,3,opt,name=negative_bleed_code,json=negativeBleedCode,proto3" json:"negative_bleed_code,omitempty"` // 0..7 → 3.73..916 µA
+	LolDisable        bool                   `protobuf:"varint,4,opt,name=lol_disable,json=lolDisable,proto3" json:"lol_disable,omitempty"`                        // disable loss-of-lock indication (more robust lock detect)
+	IntegerNMode      bool                   `protobuf:"varint,5,opt,name=integer_n_mode,json=integerNMode,proto3" json:"integer_n_mode,omitempty"`                // Σ-Δ off, FRAC forced 0; disables chirp/FSK/PSK/phase
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *SetAdfLoopConfigRequest) Reset() {
+	*x = SetAdfLoopConfigRequest{}
+	mi := &file_control_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAdfLoopConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAdfLoopConfigRequest) ProtoMessage() {}
+
+func (x *SetAdfLoopConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAdfLoopConfigRequest.ProtoReflect.Descriptor instead.
+func (*SetAdfLoopConfigRequest) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *SetAdfLoopConfigRequest) GetCsr() bool {
+	if x != nil {
+		return x.Csr
+	}
+	return false
+}
+
+func (x *SetAdfLoopConfigRequest) GetNegativeBleed() bool {
+	if x != nil {
+		return x.NegativeBleed
+	}
+	return false
+}
+
+func (x *SetAdfLoopConfigRequest) GetNegativeBleedCode() uint32 {
+	if x != nil {
+		return x.NegativeBleedCode
+	}
+	return 0
+}
+
+func (x *SetAdfLoopConfigRequest) GetLolDisable() bool {
+	if x != nil {
+		return x.LolDisable
+	}
+	return false
+}
+
+func (x *SetAdfLoopConfigRequest) GetIntegerNMode() bool {
+	if x != nil {
+		return x.IntegerNMode
+	}
+	return false
+}
+
+type SetAdfLoopConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAdfLoopConfigResponse) Reset() {
+	*x = SetAdfLoopConfigResponse{}
+	mi := &file_control_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAdfLoopConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAdfLoopConfigResponse) ProtoMessage() {}
+
+func (x *SetAdfLoopConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAdfLoopConfigResponse.ProtoReflect.Descriptor instead.
+func (*SetAdfLoopConfigResponse) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{44}
+}
+
+// ADF4159 power controls (Barracuda). FULL-STATE, like SetAdfLoopConfig.
+type SetAdfPowerRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PowerDown     bool                   `protobuf:"varint,1,opt,name=power_down,json=powerDown,proto3" json:"power_down,omitempty"`            // software power-down (registers retained)
+	CpThreeState  bool                   `protobuf:"varint,2,opt,name=cp_three_state,json=cpThreeState,proto3" json:"cp_three_state,omitempty"` // charge pump three-stated
+	CounterReset  bool                   `protobuf:"varint,3,opt,name=counter_reset,json=counterReset,proto3" json:"counter_reset,omitempty"`   // RF counters held in reset
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAdfPowerRequest) Reset() {
+	*x = SetAdfPowerRequest{}
+	mi := &file_control_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAdfPowerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAdfPowerRequest) ProtoMessage() {}
+
+func (x *SetAdfPowerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAdfPowerRequest.ProtoReflect.Descriptor instead.
+func (*SetAdfPowerRequest) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *SetAdfPowerRequest) GetPowerDown() bool {
+	if x != nil {
+		return x.PowerDown
+	}
+	return false
+}
+
+func (x *SetAdfPowerRequest) GetCpThreeState() bool {
+	if x != nil {
+		return x.CpThreeState
+	}
+	return false
+}
+
+func (x *SetAdfPowerRequest) GetCounterReset() bool {
+	if x != nil {
+		return x.CounterReset
+	}
+	return false
+}
+
+type SetAdfPowerResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAdfPowerResponse) Reset() {
+	*x = SetAdfPowerResponse{}
+	mi := &file_control_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAdfPowerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAdfPowerResponse) ProtoMessage() {}
+
+func (x *SetAdfPowerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_control_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAdfPowerResponse.ProtoReflect.Descriptor instead.
+func (*SetAdfPowerResponse) Descriptor() ([]byte, []int) {
+	return file_control_proto_rawDescGZIP(), []int{46}
+}
+
 // Packet message with all request and response types
 type Packet struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2227,6 +2919,16 @@ type Packet struct {
 	//	*Packet_SetChirpResponse
 	//	*Packet_SetDsaAttenuationRequest
 	//	*Packet_SetDsaAttenuationResponse
+	//	*Packet_SetFskRequest
+	//	*Packet_SetFskResponse
+	//	*Packet_SetPhaseRequest
+	//	*Packet_SetPhaseResponse
+	//	*Packet_SetAdfRefConfigRequest
+	//	*Packet_SetAdfRefConfigResponse
+	//	*Packet_SetAdfLoopConfigRequest
+	//	*Packet_SetAdfLoopConfigResponse
+	//	*Packet_SetAdfPowerRequest
+	//	*Packet_SetAdfPowerResponse
 	MessageId     isPacket_MessageId `protobuf_oneof:"message_id"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2234,7 +2936,7 @@ type Packet struct {
 
 func (x *Packet) Reset() {
 	*x = Packet{}
-	mi := &file_control_proto_msgTypes[37]
+	mi := &file_control_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2246,7 +2948,7 @@ func (x *Packet) String() string {
 func (*Packet) ProtoMessage() {}
 
 func (x *Packet) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[37]
+	mi := &file_control_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2259,7 +2961,7 @@ func (x *Packet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Packet.ProtoReflect.Descriptor instead.
 func (*Packet) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{37}
+	return file_control_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *Packet) GetMessageId() isPacket_MessageId {
@@ -2602,6 +3304,96 @@ func (x *Packet) GetSetDsaAttenuationResponse() *SetDsaAttenuationResponse {
 	return nil
 }
 
+func (x *Packet) GetSetFskRequest() *SetFskRequest {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetFskRequest); ok {
+			return x.SetFskRequest
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetFskResponse() *SetFskResponse {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetFskResponse); ok {
+			return x.SetFskResponse
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetPhaseRequest() *SetPhaseRequest {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetPhaseRequest); ok {
+			return x.SetPhaseRequest
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetPhaseResponse() *SetPhaseResponse {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetPhaseResponse); ok {
+			return x.SetPhaseResponse
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetAdfRefConfigRequest() *SetAdfRefConfigRequest {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetAdfRefConfigRequest); ok {
+			return x.SetAdfRefConfigRequest
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetAdfRefConfigResponse() *SetAdfRefConfigResponse {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetAdfRefConfigResponse); ok {
+			return x.SetAdfRefConfigResponse
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetAdfLoopConfigRequest() *SetAdfLoopConfigRequest {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetAdfLoopConfigRequest); ok {
+			return x.SetAdfLoopConfigRequest
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetAdfLoopConfigResponse() *SetAdfLoopConfigResponse {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetAdfLoopConfigResponse); ok {
+			return x.SetAdfLoopConfigResponse
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetAdfPowerRequest() *SetAdfPowerRequest {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetAdfPowerRequest); ok {
+			return x.SetAdfPowerRequest
+		}
+	}
+	return nil
+}
+
+func (x *Packet) GetSetAdfPowerResponse() *SetAdfPowerResponse {
+	if x != nil {
+		if x, ok := x.MessageId.(*Packet_SetAdfPowerResponse); ok {
+			return x.SetAdfPowerResponse
+		}
+	}
+	return nil
+}
+
 type isPacket_MessageId interface {
 	isPacket_MessageId()
 }
@@ -2754,6 +3546,47 @@ type Packet_SetDsaAttenuationResponse struct {
 	SetDsaAttenuationResponse *SetDsaAttenuationResponse `protobuf:"bytes,37,opt,name=set_dsa_attenuation_response,json=setDsaAttenuationResponse,proto3,oneof"`
 }
 
+type Packet_SetFskRequest struct {
+	// Barracuda ADF4159 extended control. 40-47 stay reserved for OTA.
+	SetFskRequest *SetFskRequest `protobuf:"bytes,52,opt,name=set_fsk_request,json=setFskRequest,proto3,oneof"`
+}
+
+type Packet_SetFskResponse struct {
+	SetFskResponse *SetFskResponse `protobuf:"bytes,53,opt,name=set_fsk_response,json=setFskResponse,proto3,oneof"`
+}
+
+type Packet_SetPhaseRequest struct {
+	SetPhaseRequest *SetPhaseRequest `protobuf:"bytes,54,opt,name=set_phase_request,json=setPhaseRequest,proto3,oneof"`
+}
+
+type Packet_SetPhaseResponse struct {
+	SetPhaseResponse *SetPhaseResponse `protobuf:"bytes,55,opt,name=set_phase_response,json=setPhaseResponse,proto3,oneof"`
+}
+
+type Packet_SetAdfRefConfigRequest struct {
+	SetAdfRefConfigRequest *SetAdfRefConfigRequest `protobuf:"bytes,56,opt,name=set_adf_ref_config_request,json=setAdfRefConfigRequest,proto3,oneof"`
+}
+
+type Packet_SetAdfRefConfigResponse struct {
+	SetAdfRefConfigResponse *SetAdfRefConfigResponse `protobuf:"bytes,57,opt,name=set_adf_ref_config_response,json=setAdfRefConfigResponse,proto3,oneof"`
+}
+
+type Packet_SetAdfLoopConfigRequest struct {
+	SetAdfLoopConfigRequest *SetAdfLoopConfigRequest `protobuf:"bytes,58,opt,name=set_adf_loop_config_request,json=setAdfLoopConfigRequest,proto3,oneof"`
+}
+
+type Packet_SetAdfLoopConfigResponse struct {
+	SetAdfLoopConfigResponse *SetAdfLoopConfigResponse `protobuf:"bytes,59,opt,name=set_adf_loop_config_response,json=setAdfLoopConfigResponse,proto3,oneof"`
+}
+
+type Packet_SetAdfPowerRequest struct {
+	SetAdfPowerRequest *SetAdfPowerRequest `protobuf:"bytes,60,opt,name=set_adf_power_request,json=setAdfPowerRequest,proto3,oneof"`
+}
+
+type Packet_SetAdfPowerResponse struct {
+	SetAdfPowerResponse *SetAdfPowerResponse `protobuf:"bytes,61,opt,name=set_adf_power_response,json=setAdfPowerResponse,proto3,oneof"`
+}
+
 func (*Packet_SetCalEnabledRequest) isPacket_MessageId() {}
 
 func (*Packet_SetCalEnabledResponse) isPacket_MessageId() {}
@@ -2827,6 +3660,26 @@ func (*Packet_SetChirpResponse) isPacket_MessageId() {}
 func (*Packet_SetDsaAttenuationRequest) isPacket_MessageId() {}
 
 func (*Packet_SetDsaAttenuationResponse) isPacket_MessageId() {}
+
+func (*Packet_SetFskRequest) isPacket_MessageId() {}
+
+func (*Packet_SetFskResponse) isPacket_MessageId() {}
+
+func (*Packet_SetPhaseRequest) isPacket_MessageId() {}
+
+func (*Packet_SetPhaseResponse) isPacket_MessageId() {}
+
+func (*Packet_SetAdfRefConfigRequest) isPacket_MessageId() {}
+
+func (*Packet_SetAdfRefConfigResponse) isPacket_MessageId() {}
+
+func (*Packet_SetAdfLoopConfigRequest) isPacket_MessageId() {}
+
+func (*Packet_SetAdfLoopConfigResponse) isPacket_MessageId() {}
+
+func (*Packet_SetAdfPowerRequest) isPacket_MessageId() {}
+
+func (*Packet_SetAdfPowerResponse) isPacket_MessageId() {}
 
 var File_control_proto protoreflect.FileDescriptor
 
@@ -2921,20 +3774,68 @@ const file_control_proto_rawDesc = "" +
 	"\x06detail\x18\x02 \x01(\tR\x06detail\"<\n" +
 	"\x15SetLoFrequencyRequest\x12#\n" +
 	"\rfrequency_mhz\x18\x01 \x01(\x05R\ffrequencyMhz\"\x18\n" +
-	"\x16SetLoFrequencyResponse\"\xc0\x01\n" +
+	"\x16SetLoFrequencyResponse\"\x8a\x06\n" +
 	"\x0fSetChirpRequest\x12$\n" +
 	"\x0estart_freq_mhz\x18\x01 \x01(\x05R\fstartFreqMhz\x12#\n" +
 	"\rdeviation_mhz\x18\x02 \x01(\x05R\fdeviationMhz\x12 \n" +
 	"\framp_time_us\x18\x03 \x01(\rR\n" +
 	"rampTimeUs\x12&\n" +
 	"\x04mode\x18\x04 \x01(\x0e2\x12.control.ChirpModeR\x04mode\x12\x18\n" +
-	"\aenabled\x18\x05 \x01(\bR\aenabled\"*\n" +
+	"\aenabled\x18\x05 \x01(\bR\aenabled\x12\x1c\n" +
+	"\tparabolic\x18\x06 \x01(\bR\tparabolic\x12\x1b\n" +
+	"\tdual_ramp\x18\a \x01(\bR\bdualRamp\x12.\n" +
+	"\x13ramp2_deviation_mhz\x18\b \x01(\x05R\x11ramp2DeviationMhz\x12\"\n" +
+	"\rramp2_time_us\x18\t \x01(\rR\vramp2TimeUs\x12\x1b\n" +
+	"\tfast_ramp\x18\n" +
+	" \x01(\bR\bfastRamp\x122\n" +
+	"\x16fast_ramp_down_time_us\x18\v \x01(\rR\x12fastRampDownTimeUs\x12%\n" +
+	"\x0ffsk_on_ramp_khz\x18\f \x01(\rR\ffskOnRampKhz\x12#\n" +
+	"\rdelayed_start\x18\r \x01(\bR\fdelayedStart\x12\x1d\n" +
+	"\n" +
+	"ramp_delay\x18\x0e \x01(\bR\trampDelay\x12\x19\n" +
+	"\bdelay_us\x18\x0f \x01(\rR\adelayUs\x12)\n" +
+	"\x10triangular_delay\x18\x10 \x01(\bR\x0ftriangularDelay\x120\n" +
+	"\x14txdata_trigger_delay\x18\x11 \x01(\bR\x12txdataTriggerDelay\x12.\n" +
+	"\x13external_step_clock\x18\x12 \x01(\bR\x11externalStepClock\x12#\n" +
+	"\rtxdata_invert\x18\x13 \x01(\bR\ftxdataInvert\x120\n" +
+	"\x14muxout_ramp_complete\x18\x14 \x01(\bR\x12muxoutRampComplete\"*\n" +
 	"\x10SetChirpResponse\x12\x16\n" +
 	"\x06locked\x18\x01 \x01(\bR\x06locked\"9\n" +
 	"\x18SetDsaAttenuationRequest\x12\x1d\n" +
 	"\n" +
 	"quarter_db\x18\x01 \x01(\x05R\tquarterDb\"\x1b\n" +
-	"\x19SetDsaAttenuationResponse\"\xf8\x19\n" +
+	"\x19SetDsaAttenuationResponse\"v\n" +
+	"\rSetFskRequest\x12&\n" +
+	"\x0fcenter_freq_mhz\x18\x01 \x01(\x05R\rcenterFreqMhz\x12#\n" +
+	"\rdeviation_khz\x18\x02 \x01(\rR\fdeviationKhz\x12\x18\n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\"\x10\n" +
+	"\x0eSetFskResponse\"h\n" +
+	"\x0fSetPhaseRequest\x12&\n" +
+	"\x04mode\x18\x01 \x01(\x0e2\x12.control.PhaseModeR\x04mode\x12-\n" +
+	"\x12phase_millidegrees\x18\x02 \x01(\x05R\x11phaseMillidegrees\"\x12\n" +
+	"\x10SetPhaseResponse\"\xbd\x01\n" +
+	"\x16SetAdfRefConfigRequest\x12\x1b\n" +
+	"\tr_counter\x18\x01 \x01(\rR\brCounter\x12\x1f\n" +
+	"\vref_doubler\x18\x02 \x01(\bR\n" +
+	"refDoubler\x12\x19\n" +
+	"\bref_div2\x18\x03 \x01(\bR\arefDiv2\x12\"\n" +
+	"\rprescaler_8_9\x18\x04 \x01(\bR\vprescaler89\x12&\n" +
+	"\x0fcp_current_code\x18\x05 \x01(\rR\rcpCurrentCode\"\x19\n" +
+	"\x17SetAdfRefConfigResponse\"\xc9\x01\n" +
+	"\x17SetAdfLoopConfigRequest\x12\x10\n" +
+	"\x03csr\x18\x01 \x01(\bR\x03csr\x12%\n" +
+	"\x0enegative_bleed\x18\x02 \x01(\bR\rnegativeBleed\x12.\n" +
+	"\x13negative_bleed_code\x18\x03 \x01(\rR\x11negativeBleedCode\x12\x1f\n" +
+	"\vlol_disable\x18\x04 \x01(\bR\n" +
+	"lolDisable\x12$\n" +
+	"\x0einteger_n_mode\x18\x05 \x01(\bR\fintegerNMode\"\x1a\n" +
+	"\x18SetAdfLoopConfigResponse\"~\n" +
+	"\x12SetAdfPowerRequest\x12\x1d\n" +
+	"\n" +
+	"power_down\x18\x01 \x01(\bR\tpowerDown\x12$\n" +
+	"\x0ecp_three_state\x18\x02 \x01(\bR\fcpThreeState\x12#\n" +
+	"\rcounter_reset\x18\x03 \x01(\bR\fcounterReset\"\x15\n" +
+	"\x13SetAdfPowerResponse\"\xc1 \n" +
 	"\x06Packet\x12^\n" +
 	"\x17set_cal_enabled_request\x18\x01 \x01(\v2%.control.SetCalibrationEnabledRequestH\x00R\x14setCalEnabledRequest\x12a\n" +
 	"\x18set_cal_enabled_response\x18\x02 \x01(\v2&.control.SetCalibrationEnabledResponseH\x00R\x15setCalEnabledResponse\x12i\n" +
@@ -2973,7 +3874,17 @@ const file_control_proto_rawDesc = "" +
 	"\x11set_chirp_request\x18\" \x01(\v2\x18.control.SetChirpRequestH\x00R\x0fsetChirpRequest\x12I\n" +
 	"\x12set_chirp_response\x18# \x01(\v2\x19.control.SetChirpResponseH\x00R\x10setChirpResponse\x12b\n" +
 	"\x1bset_dsa_attenuation_request\x18$ \x01(\v2!.control.SetDsaAttenuationRequestH\x00R\x18setDsaAttenuationRequest\x12e\n" +
-	"\x1cset_dsa_attenuation_response\x18% \x01(\v2\".control.SetDsaAttenuationResponseH\x00R\x19setDsaAttenuationResponseB\f\n" +
+	"\x1cset_dsa_attenuation_response\x18% \x01(\v2\".control.SetDsaAttenuationResponseH\x00R\x19setDsaAttenuationResponse\x12@\n" +
+	"\x0fset_fsk_request\x184 \x01(\v2\x16.control.SetFskRequestH\x00R\rsetFskRequest\x12C\n" +
+	"\x10set_fsk_response\x185 \x01(\v2\x17.control.SetFskResponseH\x00R\x0esetFskResponse\x12F\n" +
+	"\x11set_phase_request\x186 \x01(\v2\x18.control.SetPhaseRequestH\x00R\x0fsetPhaseRequest\x12I\n" +
+	"\x12set_phase_response\x187 \x01(\v2\x19.control.SetPhaseResponseH\x00R\x10setPhaseResponse\x12]\n" +
+	"\x1aset_adf_ref_config_request\x188 \x01(\v2\x1f.control.SetAdfRefConfigRequestH\x00R\x16setAdfRefConfigRequest\x12`\n" +
+	"\x1bset_adf_ref_config_response\x189 \x01(\v2 .control.SetAdfRefConfigResponseH\x00R\x17setAdfRefConfigResponse\x12`\n" +
+	"\x1bset_adf_loop_config_request\x18: \x01(\v2 .control.SetAdfLoopConfigRequestH\x00R\x17setAdfLoopConfigRequest\x12c\n" +
+	"\x1cset_adf_loop_config_response\x18; \x01(\v2!.control.SetAdfLoopConfigResponseH\x00R\x18setAdfLoopConfigResponse\x12P\n" +
+	"\x15set_adf_power_request\x18< \x01(\v2\x1b.control.SetAdfPowerRequestH\x00R\x12setAdfPowerRequest\x12S\n" +
+	"\x16set_adf_power_response\x18= \x01(\v2\x1c.control.SetAdfPowerResponseH\x00R\x13setAdfPowerResponseB\f\n" +
 	"\n" +
 	"message_id*N\n" +
 	"\x0eRfSwitchOption\x12\x1d\n" +
@@ -3001,7 +3912,11 @@ const file_control_proto_rawDesc = "" +
 	"\x16ERROR_CODE_UNSUPPORTED\x10\x01\x12\x1c\n" +
 	"\x18ERROR_CODE_DECODE_FAILED\x10\x02\x12\x1e\n" +
 	"\x1aERROR_CODE_INVALID_REQUEST\x10\x03\x12\x1d\n" +
-	"\x19ERROR_CODE_HARDWARE_ERROR\x10\x04B7Z5github.com/OcupointInc/rf-control/controlpb;controlpbb\x06proto3"
+	"\x19ERROR_CODE_HARDWARE_ERROR\x10\x04*J\n" +
+	"\tPhaseMode\x12\x12\n" +
+	"\x0ePHASE_MODE_OFF\x10\x00\x12\x12\n" +
+	"\x0ePHASE_MODE_PSK\x10\x01\x12\x15\n" +
+	"\x11PHASE_MODE_STATIC\x10\x02B7Z5github.com/OcupointInc/rf-control/controlpb;controlpbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -3015,8 +3930,8 @@ func file_control_proto_rawDescGZIP() []byte {
 	return file_control_proto_rawDescData
 }
 
-var file_control_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
+var file_control_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_control_proto_goTypes = []any{
 	(RfSwitchOption)(0),                    // 0: control.RfSwitchOption
 	(MixerSwitchOption)(0),                 // 1: control.MixerSwitchOption
@@ -3024,44 +3939,55 @@ var file_control_proto_goTypes = []any{
 	(RfBand)(0),                            // 3: control.RfBand
 	(ChirpMode)(0),                         // 4: control.ChirpMode
 	(ErrorCode)(0),                         // 5: control.ErrorCode
-	(*SetPllFrequencyRequest)(nil),         // 6: control.SetPllFrequencyRequest
-	(*SetRfBandRequest)(nil),               // 7: control.SetRfBandRequest
-	(*SetSwitchesRequest)(nil),             // 8: control.SetSwitchesRequest
-	(*SetCalibrationEnabledRequest)(nil),   // 9: control.SetCalibrationEnabledRequest
-	(*SetCalSourceRequest)(nil),            // 10: control.SetCalSourceRequest
-	(*SetClockSourceRequest)(nil),          // 11: control.SetClockSourceRequest
-	(*SetChannelsEnabledRequest)(nil),      // 12: control.SetChannelsEnabledRequest
-	(*SetAttenuationRequest)(nil),          // 13: control.SetAttenuationRequest
-	(*SetRfSwitchChannelRequest)(nil),      // 14: control.SetRfSwitchChannelRequest
-	(*SetCalibrationEnabledResponse)(nil),  // 15: control.SetCalibrationEnabledResponse
-	(*SetCalSourceResponse)(nil),           // 16: control.SetCalSourceResponse
-	(*SetClockSourceResponse)(nil),         // 17: control.SetClockSourceResponse
-	(*SetAttenuationResponse)(nil),         // 18: control.SetAttenuationResponse
-	(*SetChannelsEnabledResponse)(nil),     // 19: control.SetChannelsEnabledResponse
-	(*SetSwitchesResponse)(nil),            // 20: control.SetSwitchesResponse
-	(*SetPllFrequencyResponse)(nil),        // 21: control.SetPllFrequencyResponse
-	(*SetRfBandResponse)(nil),              // 22: control.SetRfBandResponse
-	(*SetRfSwitchChannelResponse)(nil),     // 23: control.SetRfSwitchChannelResponse
-	(*GetStatusRequest)(nil),               // 24: control.GetStatusRequest
-	(*SetCalAttenuationResponse)(nil),      // 25: control.SetCalAttenuationResponse
-	(*SetFrontendAttenuationResponse)(nil), // 26: control.SetFrontendAttenuationResponse
-	(*SaveConfigRequest)(nil),              // 27: control.SaveConfigRequest
-	(*SaveConfigResponse)(nil),             // 28: control.SaveConfigResponse
-	(*GetStatusResponse)(nil),              // 29: control.GetStatusResponse
-	(*GetConfigRequest)(nil),               // 30: control.GetConfigRequest
-	(*GetConfigResponse)(nil),              // 31: control.GetConfigResponse
-	(*EepromReadRequest)(nil),              // 32: control.EepromReadRequest
-	(*EepromReadResponse)(nil),             // 33: control.EepromReadResponse
-	(*EepromWriteRequest)(nil),             // 34: control.EepromWriteRequest
-	(*EepromWriteResponse)(nil),            // 35: control.EepromWriteResponse
-	(*ErrorResponse)(nil),                  // 36: control.ErrorResponse
-	(*SetLoFrequencyRequest)(nil),          // 37: control.SetLoFrequencyRequest
-	(*SetLoFrequencyResponse)(nil),         // 38: control.SetLoFrequencyResponse
-	(*SetChirpRequest)(nil),                // 39: control.SetChirpRequest
-	(*SetChirpResponse)(nil),               // 40: control.SetChirpResponse
-	(*SetDsaAttenuationRequest)(nil),       // 41: control.SetDsaAttenuationRequest
-	(*SetDsaAttenuationResponse)(nil),      // 42: control.SetDsaAttenuationResponse
-	(*Packet)(nil),                         // 43: control.Packet
+	(PhaseMode)(0),                         // 6: control.PhaseMode
+	(*SetPllFrequencyRequest)(nil),         // 7: control.SetPllFrequencyRequest
+	(*SetRfBandRequest)(nil),               // 8: control.SetRfBandRequest
+	(*SetSwitchesRequest)(nil),             // 9: control.SetSwitchesRequest
+	(*SetCalibrationEnabledRequest)(nil),   // 10: control.SetCalibrationEnabledRequest
+	(*SetCalSourceRequest)(nil),            // 11: control.SetCalSourceRequest
+	(*SetClockSourceRequest)(nil),          // 12: control.SetClockSourceRequest
+	(*SetChannelsEnabledRequest)(nil),      // 13: control.SetChannelsEnabledRequest
+	(*SetAttenuationRequest)(nil),          // 14: control.SetAttenuationRequest
+	(*SetRfSwitchChannelRequest)(nil),      // 15: control.SetRfSwitchChannelRequest
+	(*SetCalibrationEnabledResponse)(nil),  // 16: control.SetCalibrationEnabledResponse
+	(*SetCalSourceResponse)(nil),           // 17: control.SetCalSourceResponse
+	(*SetClockSourceResponse)(nil),         // 18: control.SetClockSourceResponse
+	(*SetAttenuationResponse)(nil),         // 19: control.SetAttenuationResponse
+	(*SetChannelsEnabledResponse)(nil),     // 20: control.SetChannelsEnabledResponse
+	(*SetSwitchesResponse)(nil),            // 21: control.SetSwitchesResponse
+	(*SetPllFrequencyResponse)(nil),        // 22: control.SetPllFrequencyResponse
+	(*SetRfBandResponse)(nil),              // 23: control.SetRfBandResponse
+	(*SetRfSwitchChannelResponse)(nil),     // 24: control.SetRfSwitchChannelResponse
+	(*GetStatusRequest)(nil),               // 25: control.GetStatusRequest
+	(*SetCalAttenuationResponse)(nil),      // 26: control.SetCalAttenuationResponse
+	(*SetFrontendAttenuationResponse)(nil), // 27: control.SetFrontendAttenuationResponse
+	(*SaveConfigRequest)(nil),              // 28: control.SaveConfigRequest
+	(*SaveConfigResponse)(nil),             // 29: control.SaveConfigResponse
+	(*GetStatusResponse)(nil),              // 30: control.GetStatusResponse
+	(*GetConfigRequest)(nil),               // 31: control.GetConfigRequest
+	(*GetConfigResponse)(nil),              // 32: control.GetConfigResponse
+	(*EepromReadRequest)(nil),              // 33: control.EepromReadRequest
+	(*EepromReadResponse)(nil),             // 34: control.EepromReadResponse
+	(*EepromWriteRequest)(nil),             // 35: control.EepromWriteRequest
+	(*EepromWriteResponse)(nil),            // 36: control.EepromWriteResponse
+	(*ErrorResponse)(nil),                  // 37: control.ErrorResponse
+	(*SetLoFrequencyRequest)(nil),          // 38: control.SetLoFrequencyRequest
+	(*SetLoFrequencyResponse)(nil),         // 39: control.SetLoFrequencyResponse
+	(*SetChirpRequest)(nil),                // 40: control.SetChirpRequest
+	(*SetChirpResponse)(nil),               // 41: control.SetChirpResponse
+	(*SetDsaAttenuationRequest)(nil),       // 42: control.SetDsaAttenuationRequest
+	(*SetDsaAttenuationResponse)(nil),      // 43: control.SetDsaAttenuationResponse
+	(*SetFskRequest)(nil),                  // 44: control.SetFskRequest
+	(*SetFskResponse)(nil),                 // 45: control.SetFskResponse
+	(*SetPhaseRequest)(nil),                // 46: control.SetPhaseRequest
+	(*SetPhaseResponse)(nil),               // 47: control.SetPhaseResponse
+	(*SetAdfRefConfigRequest)(nil),         // 48: control.SetAdfRefConfigRequest
+	(*SetAdfRefConfigResponse)(nil),        // 49: control.SetAdfRefConfigResponse
+	(*SetAdfLoopConfigRequest)(nil),        // 50: control.SetAdfLoopConfigRequest
+	(*SetAdfLoopConfigResponse)(nil),       // 51: control.SetAdfLoopConfigResponse
+	(*SetAdfPowerRequest)(nil),             // 52: control.SetAdfPowerRequest
+	(*SetAdfPowerResponse)(nil),            // 53: control.SetAdfPowerResponse
+	(*Packet)(nil),                         // 54: control.Packet
 }
 var file_control_proto_depIdxs = []int32{
 	3,  // 0: control.SetRfBandRequest.band:type_name -> control.RfBand
@@ -3073,48 +3999,59 @@ var file_control_proto_depIdxs = []int32{
 	2,  // 6: control.GetStatusResponse.if_switch:type_name -> control.IfSwitchOption
 	5,  // 7: control.ErrorResponse.code:type_name -> control.ErrorCode
 	4,  // 8: control.SetChirpRequest.mode:type_name -> control.ChirpMode
-	9,  // 9: control.Packet.set_cal_enabled_request:type_name -> control.SetCalibrationEnabledRequest
-	15, // 10: control.Packet.set_cal_enabled_response:type_name -> control.SetCalibrationEnabledResponse
-	13, // 11: control.Packet.set_frontend_attenuation_request:type_name -> control.SetAttenuationRequest
-	12, // 12: control.Packet.set_channels_enabled_request:type_name -> control.SetChannelsEnabledRequest
-	26, // 13: control.Packet.set_frontend_attenuation_response:type_name -> control.SetFrontendAttenuationResponse
-	19, // 14: control.Packet.set_channels_enabled_response:type_name -> control.SetChannelsEnabledResponse
-	24, // 15: control.Packet.get_status_request:type_name -> control.GetStatusRequest
-	29, // 16: control.Packet.get_status_response:type_name -> control.GetStatusResponse
-	8,  // 17: control.Packet.set_switches_request:type_name -> control.SetSwitchesRequest
-	20, // 18: control.Packet.set_switches_response:type_name -> control.SetSwitchesResponse
-	6,  // 19: control.Packet.set_pll_frequency_request:type_name -> control.SetPllFrequencyRequest
-	21, // 20: control.Packet.set_pll_frequency_response:type_name -> control.SetPllFrequencyResponse
-	7,  // 21: control.Packet.set_rf_band_request:type_name -> control.SetRfBandRequest
-	22, // 22: control.Packet.set_rf_band_response:type_name -> control.SetRfBandResponse
-	13, // 23: control.Packet.set_cal_attenuation_request:type_name -> control.SetAttenuationRequest
-	25, // 24: control.Packet.set_cal_attenuation_response:type_name -> control.SetCalAttenuationResponse
-	27, // 25: control.Packet.save_config_request:type_name -> control.SaveConfigRequest
-	28, // 26: control.Packet.save_config_response:type_name -> control.SaveConfigResponse
-	30, // 27: control.Packet.get_config_request:type_name -> control.GetConfigRequest
-	31, // 28: control.Packet.get_config_response:type_name -> control.GetConfigResponse
-	32, // 29: control.Packet.eeprom_read_request:type_name -> control.EepromReadRequest
-	33, // 30: control.Packet.eeprom_read_response:type_name -> control.EepromReadResponse
-	34, // 31: control.Packet.eeprom_write_request:type_name -> control.EepromWriteRequest
-	35, // 32: control.Packet.eeprom_write_response:type_name -> control.EepromWriteResponse
-	14, // 33: control.Packet.set_rf_switch_channel_request:type_name -> control.SetRfSwitchChannelRequest
-	23, // 34: control.Packet.set_rf_switch_channel_response:type_name -> control.SetRfSwitchChannelResponse
-	10, // 35: control.Packet.set_cal_source_request:type_name -> control.SetCalSourceRequest
-	16, // 36: control.Packet.set_cal_source_response:type_name -> control.SetCalSourceResponse
-	36, // 37: control.Packet.error_response:type_name -> control.ErrorResponse
-	11, // 38: control.Packet.set_clock_source_request:type_name -> control.SetClockSourceRequest
-	17, // 39: control.Packet.set_clock_source_response:type_name -> control.SetClockSourceResponse
-	37, // 40: control.Packet.set_lo_frequency_request:type_name -> control.SetLoFrequencyRequest
-	38, // 41: control.Packet.set_lo_frequency_response:type_name -> control.SetLoFrequencyResponse
-	39, // 42: control.Packet.set_chirp_request:type_name -> control.SetChirpRequest
-	40, // 43: control.Packet.set_chirp_response:type_name -> control.SetChirpResponse
-	41, // 44: control.Packet.set_dsa_attenuation_request:type_name -> control.SetDsaAttenuationRequest
-	42, // 45: control.Packet.set_dsa_attenuation_response:type_name -> control.SetDsaAttenuationResponse
-	46, // [46:46] is the sub-list for method output_type
-	46, // [46:46] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	6,  // 9: control.SetPhaseRequest.mode:type_name -> control.PhaseMode
+	10, // 10: control.Packet.set_cal_enabled_request:type_name -> control.SetCalibrationEnabledRequest
+	16, // 11: control.Packet.set_cal_enabled_response:type_name -> control.SetCalibrationEnabledResponse
+	14, // 12: control.Packet.set_frontend_attenuation_request:type_name -> control.SetAttenuationRequest
+	13, // 13: control.Packet.set_channels_enabled_request:type_name -> control.SetChannelsEnabledRequest
+	27, // 14: control.Packet.set_frontend_attenuation_response:type_name -> control.SetFrontendAttenuationResponse
+	20, // 15: control.Packet.set_channels_enabled_response:type_name -> control.SetChannelsEnabledResponse
+	25, // 16: control.Packet.get_status_request:type_name -> control.GetStatusRequest
+	30, // 17: control.Packet.get_status_response:type_name -> control.GetStatusResponse
+	9,  // 18: control.Packet.set_switches_request:type_name -> control.SetSwitchesRequest
+	21, // 19: control.Packet.set_switches_response:type_name -> control.SetSwitchesResponse
+	7,  // 20: control.Packet.set_pll_frequency_request:type_name -> control.SetPllFrequencyRequest
+	22, // 21: control.Packet.set_pll_frequency_response:type_name -> control.SetPllFrequencyResponse
+	8,  // 22: control.Packet.set_rf_band_request:type_name -> control.SetRfBandRequest
+	23, // 23: control.Packet.set_rf_band_response:type_name -> control.SetRfBandResponse
+	14, // 24: control.Packet.set_cal_attenuation_request:type_name -> control.SetAttenuationRequest
+	26, // 25: control.Packet.set_cal_attenuation_response:type_name -> control.SetCalAttenuationResponse
+	28, // 26: control.Packet.save_config_request:type_name -> control.SaveConfigRequest
+	29, // 27: control.Packet.save_config_response:type_name -> control.SaveConfigResponse
+	31, // 28: control.Packet.get_config_request:type_name -> control.GetConfigRequest
+	32, // 29: control.Packet.get_config_response:type_name -> control.GetConfigResponse
+	33, // 30: control.Packet.eeprom_read_request:type_name -> control.EepromReadRequest
+	34, // 31: control.Packet.eeprom_read_response:type_name -> control.EepromReadResponse
+	35, // 32: control.Packet.eeprom_write_request:type_name -> control.EepromWriteRequest
+	36, // 33: control.Packet.eeprom_write_response:type_name -> control.EepromWriteResponse
+	15, // 34: control.Packet.set_rf_switch_channel_request:type_name -> control.SetRfSwitchChannelRequest
+	24, // 35: control.Packet.set_rf_switch_channel_response:type_name -> control.SetRfSwitchChannelResponse
+	11, // 36: control.Packet.set_cal_source_request:type_name -> control.SetCalSourceRequest
+	17, // 37: control.Packet.set_cal_source_response:type_name -> control.SetCalSourceResponse
+	37, // 38: control.Packet.error_response:type_name -> control.ErrorResponse
+	12, // 39: control.Packet.set_clock_source_request:type_name -> control.SetClockSourceRequest
+	18, // 40: control.Packet.set_clock_source_response:type_name -> control.SetClockSourceResponse
+	38, // 41: control.Packet.set_lo_frequency_request:type_name -> control.SetLoFrequencyRequest
+	39, // 42: control.Packet.set_lo_frequency_response:type_name -> control.SetLoFrequencyResponse
+	40, // 43: control.Packet.set_chirp_request:type_name -> control.SetChirpRequest
+	41, // 44: control.Packet.set_chirp_response:type_name -> control.SetChirpResponse
+	42, // 45: control.Packet.set_dsa_attenuation_request:type_name -> control.SetDsaAttenuationRequest
+	43, // 46: control.Packet.set_dsa_attenuation_response:type_name -> control.SetDsaAttenuationResponse
+	44, // 47: control.Packet.set_fsk_request:type_name -> control.SetFskRequest
+	45, // 48: control.Packet.set_fsk_response:type_name -> control.SetFskResponse
+	46, // 49: control.Packet.set_phase_request:type_name -> control.SetPhaseRequest
+	47, // 50: control.Packet.set_phase_response:type_name -> control.SetPhaseResponse
+	48, // 51: control.Packet.set_adf_ref_config_request:type_name -> control.SetAdfRefConfigRequest
+	49, // 52: control.Packet.set_adf_ref_config_response:type_name -> control.SetAdfRefConfigResponse
+	50, // 53: control.Packet.set_adf_loop_config_request:type_name -> control.SetAdfLoopConfigRequest
+	51, // 54: control.Packet.set_adf_loop_config_response:type_name -> control.SetAdfLoopConfigResponse
+	52, // 55: control.Packet.set_adf_power_request:type_name -> control.SetAdfPowerRequest
+	53, // 56: control.Packet.set_adf_power_response:type_name -> control.SetAdfPowerResponse
+	57, // [57:57] is the sub-list for method output_type
+	57, // [57:57] is the sub-list for method input_type
+	57, // [57:57] is the sub-list for extension type_name
+	57, // [57:57] is the sub-list for extension extendee
+	0,  // [0:57] is the sub-list for field type_name
 }
 
 func init() { file_control_proto_init() }
@@ -3122,7 +4059,7 @@ func file_control_proto_init() {
 	if File_control_proto != nil {
 		return
 	}
-	file_control_proto_msgTypes[37].OneofWrappers = []any{
+	file_control_proto_msgTypes[47].OneofWrappers = []any{
 		(*Packet_SetCalEnabledRequest)(nil),
 		(*Packet_SetCalEnabledResponse)(nil),
 		(*Packet_SetFrontendAttenuationRequest)(nil),
@@ -3160,14 +4097,24 @@ func file_control_proto_init() {
 		(*Packet_SetChirpResponse)(nil),
 		(*Packet_SetDsaAttenuationRequest)(nil),
 		(*Packet_SetDsaAttenuationResponse)(nil),
+		(*Packet_SetFskRequest)(nil),
+		(*Packet_SetFskResponse)(nil),
+		(*Packet_SetPhaseRequest)(nil),
+		(*Packet_SetPhaseResponse)(nil),
+		(*Packet_SetAdfRefConfigRequest)(nil),
+		(*Packet_SetAdfRefConfigResponse)(nil),
+		(*Packet_SetAdfLoopConfigRequest)(nil),
+		(*Packet_SetAdfLoopConfigResponse)(nil),
+		(*Packet_SetAdfPowerRequest)(nil),
+		(*Packet_SetAdfPowerResponse)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   38,
+			NumEnums:      7,
+			NumMessages:   48,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

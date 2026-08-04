@@ -17,6 +17,12 @@
 // yet, so a device replies ERROR_CODE_UNSUPPORTED until the handler lands; when
 // it does, mirror these additions into the canonical proto with the SAME tags.
 //
+// TAG GAP: the Packet oneof jumps from 37 to 52. Tags 38-51 belong to canonical
+// firmware messages this copy has not been synced with yet (40-47 are reserved
+// for OTA); the ADF4159 extended-control block at 52-61 was added here from the
+// shared wire spec without back-filling them. Never reuse 38-51 for something
+// else — the tag numbers, not their contiguity, are what has to match.
+//
 // POLARITY: both fields carry `external` sense — true = external reference,
 // false = internal on-board oscillator. This is the OPPOSITE of the adjacent
 // cal_source_internal / SetCalSourceRequest.internal fields, and it was chosen
@@ -255,6 +261,24 @@ message SetChirpRequest {
   uint32 ramp_time_us  = 3;  // ramp duration in microseconds (e.g. 35)
   ChirpMode mode       = 4;
   bool enabled         = 5;  // true = arm/run the ramp, false = CW at start freq
+  // ── Extended waveform options (all zero/false = the classic 5-field chirp) ──
+  bool parabolic = 6;              // nonlinear ramp (§10.5); deviation_mhz is the TOTAL span.
+                                   // Mutually exclusive with dual_ramp/fast_ramp.
+  bool dual_ramp = 7;              // second ramp rate in bank 1 (fields 8/9)
+  int32 ramp2_deviation_mhz = 8;   // dual ramp: bank-1 sweep span
+  uint32 ramp2_time_us = 9;        // dual ramp: bank-1 ramp time
+  bool fast_ramp = 10;             // two-slope triangular; down-slope time in field 11
+  uint32 fast_ramp_down_time_us = 11;
+  uint32 fsk_on_ramp_khz = 12;     // FSK deviation superimposed on the ramp; 0 = off
+  bool delayed_start = 13;         // delay ramp start by delay_us
+  bool ramp_delay = 14;            // dwell of delay_us between ramps
+  uint32 delay_us = 15;            // duration used by fields 13/14/17
+  bool triangular_delay = 16;      // clipped triangular (requires ramp_delay + a triangle mode)
+  bool txdata_trigger_delay = 17;  // apply delay_us when TXDATA triggers a ramp
+  bool external_step_clock = 18;   // TXDATA pin advances each ramp step (no internal clock)
+  bool txdata_invert = 19;         // TXDATA events on the falling edge
+  bool muxout_ramp_complete = 20;  // route the ramp-complete pulse to MUXOUT
+                                   // (sacrifices lock-detect on that pin while enabled)
 }
 message SetChirpResponse {
   bool locked = 1;           // ADF4159 reported lock after programming
@@ -266,6 +290,60 @@ message SetDsaAttenuationRequest {
   int32 quarter_db = 1;
 }
 message SetDsaAttenuationResponse {}
+
+// ADF4159 FSK modulation (Barracuda). Programs center + deviation and enables
+// FSK; the data stream itself is applied on the TXDATA pin by external
+// hardware/test equipment. enabled=false reverts to CW at center_freq_mhz.
+message SetFskRequest {
+  int32 center_freq_mhz = 1;
+  uint32 deviation_khz = 2;  // hop is ±deviation around center
+  bool enabled = 3;
+}
+message SetFskResponse {}
+
+// ADF4159 output-phase control (Barracuda).
+enum PhaseMode {
+  PHASE_MODE_OFF = 0;     // PSK and phase adjust disabled, phase word cleared
+  PHASE_MODE_PSK = 1;     // PSK via TXDATA: +phase when high, −phase when low
+  PHASE_MODE_STATIC = 2;  // one-shot static phase increment (relative to current phase)
+}
+message SetPhaseRequest {
+  PhaseMode mode = 1;
+  int32 phase_millidegrees = 2;  // e.g. 90000 = +90°; hardware resolution 360°/4096
+}
+message SetPhaseResponse {}
+
+// ADF4159 reference-path configuration (Barracuda). f_PFD = REFIN×(1+doubler) /
+// (r_counter×(1+div2)). The firmware revalidates the armed waveform at the new
+// f_PFD and refuses (INVALID_REQUEST) any change that would push the output
+// past the RF ceiling. Requires a frequency to have been programmed first.
+message SetAdfRefConfigRequest {
+  uint32 r_counter = 1;        // 1..32
+  bool ref_doubler = 2;        // REFIN ≤ 50 MHz required; CP codes 0..7 only
+  bool ref_div2 = 3;           // ÷2 after R counter (50% PFD duty, needed for CSR)
+  bool prescaler_8_9 = 4;      // false = 4/5 (RF ≤ 8 GHz, INT ≥ 23); true = 8/9 (INT ≥ 75)
+  uint32 cp_current_code = 5;  // 0..15, 0.31..5 mA at RSET = 5.1 kΩ
+}
+message SetAdfRefConfigResponse {}
+
+// ADF4159 loop-quality features (Barracuda). FULL-STATE: every call applies all
+// five fields; omitted fields fall back to their zero-value (= feature off).
+message SetAdfLoopConfigRequest {
+  bool csr = 1;                    // cycle slip reduction (needs CP code 0, +PD polarity)
+  bool negative_bleed = 2;
+  uint32 negative_bleed_code = 3;  // 0..7 → 3.73..916 µA
+  bool lol_disable = 4;            // disable loss-of-lock indication (more robust lock detect)
+  bool integer_n_mode = 5;         // Σ-Δ off, FRAC forced 0; disables chirp/FSK/PSK/phase
+}
+message SetAdfLoopConfigResponse {}
+
+// ADF4159 power controls (Barracuda). FULL-STATE, like SetAdfLoopConfig.
+message SetAdfPowerRequest {
+  bool power_down = 1;     // software power-down (registers retained)
+  bool cp_three_state = 2; // charge pump three-stated
+  bool counter_reset = 3;  // RF counters held in reset
+}
+message SetAdfPowerResponse {}
 
 // Packet message with all request and response types
 message Packet {
@@ -307,5 +385,16 @@ message Packet {
     SetChirpResponse set_chirp_response = 35;
     SetDsaAttenuationRequest set_dsa_attenuation_request = 36;
     SetDsaAttenuationResponse set_dsa_attenuation_response = 37;
+    // Barracuda ADF4159 extended control. 40-47 stay reserved for OTA.
+    SetFskRequest set_fsk_request = 52;
+    SetFskResponse set_fsk_response = 53;
+    SetPhaseRequest set_phase_request = 54;
+    SetPhaseResponse set_phase_response = 55;
+    SetAdfRefConfigRequest set_adf_ref_config_request = 56;
+    SetAdfRefConfigResponse set_adf_ref_config_response = 57;
+    SetAdfLoopConfigRequest set_adf_loop_config_request = 58;
+    SetAdfLoopConfigResponse set_adf_loop_config_response = 59;
+    SetAdfPowerRequest set_adf_power_request = 60;
+    SetAdfPowerResponse set_adf_power_response = 61;
   }
 }
