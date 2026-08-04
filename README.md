@@ -180,7 +180,60 @@ set-pll <MHz>          Tune the STRAPS LMX2595 LO
 set-band <band>        Apply a STRAPS band preset (switches + LO)
 set-switch-channel <1-8|off>
                        Route the SP8T RF-switch board's common port
+
+Barracuda RF module (other boards answer "unsupported", exit code 4):
+set-lo <MHz>           Tune the LMX2595 LO (0 powers it down)
+set-dsa <dB>           HMC1119 attenuation, 0-31.75 dB in 0.25 dB steps
+set-chirp [flags]      Program/arm the ADF4159 FMCW ramp
+set-fsk [flags]        ADF4159 FSK around a center frequency
+set-phase <off|psk|static> [degrees]
+                       ADF4159 output phase / PSK
+set-adf-ref [flags]    ADF4159 reference path (R counter, doubler, CP current)
+set-adf-loop [flags]   ADF4159 loop quality (CSR, bleed, integer-N) — full state
+set-adf-power [flags]  ADF4159 power-down / CP three-state / counter reset — full state
 ```
+
+### Barracuda ADF4159 commands
+
+```bash
+rf-control set-chirp --start 11700 --dev 1500 --time 35 --mode sawtooth
+rf-control set-chirp --off                    # hold CW at --start
+rf-control set-fsk --center 11700 --dev-khz 500
+rf-control set-phase psk 90                   # +/-90 deg toggled from TXDATA
+rf-control set-adf-ref --r-counter 1 --cp-code 7 --prescaler 8/9
+rf-control set-adf-loop --negative-bleed --bleed-code 4
+rf-control set-adf-power                      # no flags = back to normal running
+```
+
+`set-chirp` also takes the extended ADF4159 waveform options, all defaulting to
+off so omitting them reproduces the classic chirp exactly: `--parabolic`,
+`--dual-ramp` (with `--ramp2-deviation` / `--ramp2-time`), `--fast-ramp` (with
+`--fast-down-time`), `--fsk-khz`, `--delayed-start`, `--ramp-delay`,
+`--delay-us`, `--triangular-delay`, `--trigger-delay`, `--external-step-clock`,
+`--txdata-invert`, and `--ramp-complete-out`. With `--ramp-complete-out` the
+MUXOUT pin carries the ramp-complete pulse instead of digital lock detect, so
+the `locked=` value it prints is the state sampled *before* the reroute, not a
+live reading.
+
+`set-adf-ref`, `set-adf-loop`, and `set-adf-power` are **full-state**: every
+call programs all of their fields, so a flag you leave out is applied as its
+default rather than left as it was. Build the whole command each time instead of
+issuing incremental tweaks. For `set-adf-loop` and `set-adf-power` those
+defaults are all-off, which makes a bare `set-adf-power` the way back to normal
+running; for `set-adf-ref` they are the Barracuda baseline (`--r-counter 1`,
+`--cp-code 7`, `--prescaler 8/9`, no doubler, no ÷2).
+
+Changing the reference path rescales everything derived from f_PFD, so program a
+frequency first: the firmware revalidates the armed waveform at the new f_PFD
+and refuses a change that would push the output past the RF ceiling.
+
+These flags also accept the shorter spellings the firmware's own `control_tool`
+uses — `--r`, `--cp`, `--doubler`, `--div2`, `--bleed`, `--cp-tristate` — so the
+same command line works against either CLI.
+
+The device is the real validator for all of these. When it refuses, it answers
+with an `INVALID_REQUEST` error whose detail names the constraint (for example
+`parabolic excludes dual/fast ramp`), which the CLI prints before exiting 4.
 
 ## Exit codes
 
@@ -350,13 +403,24 @@ if err := c.SetAttenuation(10); err != nil {
 `Client` has one method per request the firmware supports today —
 `GetConfig`, `SaveConfig`, `GetStatus`, `SetAttenuation`, `SetCalAttenuation`,
 `SetChannelsEnabled`, `SetCalEnabled`, `SetCalSource`, `SetClockSource`,
-`SetSwitches`, `SetPllFrequency`, `SetRfBand`, `SetRfSwitchChannel` — each
+`SetSwitches`, `SetPllFrequency`, `SetRfBand`, `SetRfSwitchChannel`, and for
+the Barracuda module `SetLoFrequency`, `SetDsaAttenuation`, `SetChirp` /
+`SetChirpEx`, `SetFsk`, `SetPhase`, `SetAdfRefConfig`, `SetAdfLoopConfig`,
+`SetAdfPower` — each
 returning the typed protobuf response (or nothing but an error, for the
 setters) from
 `github.com/OcupointInc/rf-control/controlpb`. USB discovery helpers
 (`client.ListCandidatePorts`, `client.IsControlPort`,
 `client.DiscoverUSBPort`) are exported too, so you can replicate the CLI's
 `list`/auto-discovery behavior in your own code.
+
+`SetChirp` keeps the classic five-argument signature (start, deviation, ramp
+time, mode, enabled) and leaves every extended ADF4159 waveform option at zero.
+Use `SetChirpEx(client.ChirpConfig{...})` when you need the parabolic, dual/fast
+ramp, delay, or TXDATA options. The ADF4159 reference, loop, and power requests
+take config structs (`client.AdfRefConfig`, `client.AdfLoopConfig`,
+`client.AdfPowerConfig`); the last two are full-state, so a zero-valued field
+turns that feature off on the device rather than leaving it untouched.
 
 For the "configure several things and apply" workflow there's a
 `client.Whalepod` settings object: set the fields, then `Write()` them all at

@@ -326,14 +326,84 @@ func (c *Client) SetDsaAttenuation(quarterDb int32) error {
 
 // SetChirp programs/arms the Barracuda ADF4159 FMCW ramp and returns the
 // reported lock state. With enabled=false the PLL holds a CW tone at startFreqMHz.
+//
+// This is the classic five-parameter chirp: every extended waveform option
+// (parabolic, dual/fast ramp, delays, TXDATA behaviour, ...) is left at its
+// zero value. Use SetChirpEx when you need those.
 func (c *Client) SetChirp(startFreqMHz, deviationMHz int32, rampTimeUs uint32, mode pb.ChirpMode, enabled bool) (locked bool, err error) {
+	return c.SetChirpEx(ChirpConfig{
+		StartFreqMHz: startFreqMHz,
+		DeviationMHz: deviationMHz,
+		RampTimeUs:   rampTimeUs,
+		Mode:         mode,
+		Enabled:      enabled,
+	})
+}
+
+// ChirpConfig is the full set of Barracuda ADF4159 ramp parameters accepted by
+// SetChirpEx. The first five fields are the classic chirp (see SetChirp); the
+// rest are the extended waveform options, and leaving them all at their zero
+// value produces exactly the classic behaviour.
+//
+// The firmware is the authoritative validator: combinations it cannot program
+// (parabolic together with dual/fast ramp, a delay longer than the hardware's
+// range, an extended option while integer-N mode is engaged, a ramp that would
+// run past the RF ceiling) come back as a *DeviceError with code
+// ERROR_CODE_INVALID_REQUEST and a Detail naming the constraint.
+type ChirpConfig struct {
+	StartFreqMHz int32        // VCO output at ramp start
+	DeviationMHz int32        // chirp bandwidth; with Parabolic this is the TOTAL span
+	RampTimeUs   uint32       // ramp duration in microseconds
+	Mode         pb.ChirpMode // ramp shape / trigger source
+	Enabled      bool         // true = arm/run the ramp, false = CW at StartFreqMHz
+
+	Parabolic          bool   // nonlinear ramp; mutually exclusive with DualRamp/FastRamp
+	DualRamp           bool   // second ramp rate in bank 1 (Ramp2DeviationMHz/Ramp2TimeUs)
+	Ramp2DeviationMHz  int32  // dual ramp: bank-1 sweep span
+	Ramp2TimeUs        uint32 // dual ramp: bank-1 ramp time
+	FastRamp           bool   // two-slope triangular; down-slope time below
+	FastRampDownTimeUs uint32
+	FskOnRampKHz       uint32 // FSK deviation superimposed on the ramp; 0 = off
+	DelayedStart       bool   // delay ramp start by DelayUs
+	RampDelay          bool   // dwell of DelayUs between ramps
+	DelayUs            uint32 // duration used by DelayedStart/RampDelay/TxdataTriggerDelay
+	TriangularDelay    bool   // clipped triangular (needs RampDelay + a triangle mode)
+	TxdataTriggerDelay bool   // apply DelayUs when TXDATA triggers a ramp
+	ExternalStepClock  bool   // TXDATA advances each ramp step (no internal clock)
+	TxdataInvert       bool   // TXDATA events on the falling edge
+	MuxoutRampComplete bool   // route ramp-complete to MUXOUT (costs lock detect, see below)
+}
+
+// SetChirpEx programs/arms the Barracuda ADF4159 ramp with the full extended
+// option set and returns the reported lock state.
+//
+// NOTE on locked: with MuxoutRampComplete the MUXOUT pin carries the
+// ramp-complete pulse instead of digital lock detect, so the returned value (and
+// GetStatus's PllLocked) is the lock state sampled before the reroute, not a
+// live indication.
+func (c *Client) SetChirpEx(cfg ChirpConfig) (locked bool, err error) {
 	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetChirpRequest{
 		SetChirpRequest: &pb.SetChirpRequest{
-			StartFreqMhz: startFreqMHz,
-			DeviationMhz: deviationMHz,
-			RampTimeUs:   rampTimeUs,
-			Mode:         mode,
-			Enabled:      enabled,
+			StartFreqMhz:       cfg.StartFreqMHz,
+			DeviationMhz:       cfg.DeviationMHz,
+			RampTimeUs:         cfg.RampTimeUs,
+			Mode:               cfg.Mode,
+			Enabled:            cfg.Enabled,
+			Parabolic:          cfg.Parabolic,
+			DualRamp:           cfg.DualRamp,
+			Ramp2DeviationMhz:  cfg.Ramp2DeviationMHz,
+			Ramp2TimeUs:        cfg.Ramp2TimeUs,
+			FastRamp:           cfg.FastRamp,
+			FastRampDownTimeUs: cfg.FastRampDownTimeUs,
+			FskOnRampKhz:       cfg.FskOnRampKHz,
+			DelayedStart:       cfg.DelayedStart,
+			RampDelay:          cfg.RampDelay,
+			DelayUs:            cfg.DelayUs,
+			TriangularDelay:    cfg.TriangularDelay,
+			TxdataTriggerDelay: cfg.TxdataTriggerDelay,
+			ExternalStepClock:  cfg.ExternalStepClock,
+			TxdataInvert:       cfg.TxdataInvert,
+			MuxoutRampComplete: cfg.MuxoutRampComplete,
 		},
 	}})
 	if err != nil {
@@ -344,6 +414,169 @@ func (c *Client) SetChirp(startFreqMHz, deviationMHz int32, rampTimeUs uint32, m
 		return false, fmt.Errorf("unexpected response type: %T", resp.MessageId)
 	}
 	return cr.SetChirpResponse.GetLocked(), nil
+}
+
+// SetFsk programs the Barracuda ADF4159 for FSK around centerFreqMHz, hopping
+// ±deviationKHz. Only the frequencies are programmed here — the data stream
+// itself is driven onto the TXDATA pin by external hardware or test equipment.
+// With enabled=false the PLL reverts to CW at centerFreqMHz.
+//
+// Barracuda-only: other boards reply with a *DeviceError of code
+// ERROR_CODE_UNSUPPORTED.
+func (c *Client) SetFsk(centerFreqMHz int32, deviationKHz uint32, enabled bool) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetFskRequest{
+		SetFskRequest: &pb.SetFskRequest{
+			CenterFreqMhz: centerFreqMHz,
+			DeviationKhz:  deviationKHz,
+			Enabled:       enabled,
+		},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetFskResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// SetPhase controls the Barracuda ADF4159 output phase: PSK toggled from the
+// TXDATA pin (+phase high, −phase low), a one-shot static increment relative to
+// the current phase, or off (both disabled and the phase word cleared, in which
+// case phaseMillidegrees is ignored).
+//
+// phaseMillidegrees is passed to the firmware untouched — 90000 means +90°. The
+// hardware quantises to 360°/4096 (~0.088°) steps, so the programmed phase is
+// the nearest representable one, and the firmware normalises the input into
+// (−180°, 180°] first.
+//
+// Barracuda-only: other boards reply with a *DeviceError of code
+// ERROR_CODE_UNSUPPORTED.
+func (c *Client) SetPhase(mode pb.PhaseMode, phaseMillidegrees int32) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetPhaseRequest{
+		SetPhaseRequest: &pb.SetPhaseRequest{
+			Mode:              mode,
+			PhaseMillidegrees: phaseMillidegrees,
+		},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetPhaseResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// AdfRefConfig is the Barracuda ADF4159 reference path:
+//
+//	f_PFD = REFIN × (1 + RefDoubler) / (RCounter × (1 + RefDiv2))
+//
+// Changing it re-scales every frequency the part derives from f_PFD, so the
+// firmware revalidates the armed waveform at the new f_PFD and refuses a change
+// that would push the output past the RF ceiling. A frequency must have been
+// programmed (SetPllFrequency / SetChirp / SetFsk) before this is meaningful.
+type AdfRefConfig struct {
+	RCounter      uint32 // reference divider, 1..32
+	RefDoubler    bool   // needs REFIN ≤ 50 MHz; restricts CpCurrentCode to 0..7
+	RefDiv2       bool   // ÷2 after the R counter (50% PFD duty, required for CSR)
+	Prescaler89   bool   // false = 4/5 (RF ≤ 8 GHz, INT ≥ 23); true = 8/9 (INT ≥ 75)
+	CpCurrentCode uint32 // charge-pump current, 0..15 → 0.31..5 mA at RSET = 5.1 kΩ
+}
+
+// SetAdfRefConfig applies the reference-path configuration described by
+// AdfRefConfig. Out-of-range or physically inconsistent combinations come back
+// as a *DeviceError with code ERROR_CODE_INVALID_REQUEST and a Detail naming
+// the constraint.
+//
+// Barracuda-only: other boards reply with a *DeviceError of code
+// ERROR_CODE_UNSUPPORTED.
+func (c *Client) SetAdfRefConfig(cfg AdfRefConfig) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetAdfRefConfigRequest{
+		SetAdfRefConfigRequest: &pb.SetAdfRefConfigRequest{
+			RCounter:      cfg.RCounter,
+			RefDoubler:    cfg.RefDoubler,
+			RefDiv2:       cfg.RefDiv2,
+			Prescaler_8_9: cfg.Prescaler89,
+			CpCurrentCode: cfg.CpCurrentCode,
+		},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetAdfRefConfigResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// AdfLoopConfig gathers the Barracuda ADF4159 loop-quality features.
+//
+// FULL STATE: SetAdfLoopConfig applies every field on every call, so a zero
+// value turns all five features off. Read it as "this is the complete loop
+// configuration", not "change these settings" — build the whole struct each
+// time rather than assuming the device keeps what you left out.
+type AdfLoopConfig struct {
+	Csr               bool   // cycle slip reduction (needs CP code 0 and positive PD polarity)
+	NegativeBleed     bool   // enable the negative bleed current
+	NegativeBleedCode uint32 // bleed magnitude, 0..7 → 3.73..916 µA
+	LolDisable        bool   // disable loss-of-lock indication (more robust lock detect)
+	IntegerNMode      bool   // Σ-Δ off, FRAC forced 0; blocks chirp/FSK/PSK/phase
+}
+
+// SetAdfLoopConfig applies the loop-quality configuration. See AdfLoopConfig
+// for the full-state semantics.
+//
+// Barracuda-only: other boards reply with a *DeviceError of code
+// ERROR_CODE_UNSUPPORTED.
+func (c *Client) SetAdfLoopConfig(cfg AdfLoopConfig) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetAdfLoopConfigRequest{
+		SetAdfLoopConfigRequest: &pb.SetAdfLoopConfigRequest{
+			Csr:               cfg.Csr,
+			NegativeBleed:     cfg.NegativeBleed,
+			NegativeBleedCode: cfg.NegativeBleedCode,
+			LolDisable:        cfg.LolDisable,
+			IntegerNMode:      cfg.IntegerNMode,
+		},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetAdfLoopConfigResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
+}
+
+// AdfPowerConfig gathers the Barracuda ADF4159 power controls. Like
+// AdfLoopConfig this is FULL STATE: SetAdfPower applies all three fields on
+// every call, so the zero value is "everything running normally".
+type AdfPowerConfig struct {
+	PowerDown    bool // software power-down (register contents are retained)
+	CpThreeState bool // charge pump three-stated
+	CounterReset bool // RF counters held in reset
+}
+
+// SetAdfPower applies the power-control state. See AdfPowerConfig for the
+// full-state semantics.
+//
+// Barracuda-only: other boards reply with a *DeviceError of code
+// ERROR_CODE_UNSUPPORTED.
+func (c *Client) SetAdfPower(cfg AdfPowerConfig) error {
+	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_SetAdfPowerRequest{
+		SetAdfPowerRequest: &pb.SetAdfPowerRequest{
+			PowerDown:    cfg.PowerDown,
+			CpThreeState: cfg.CpThreeState,
+			CounterReset: cfg.CounterReset,
+		},
+	}})
+	if err != nil {
+		return err
+	}
+	if _, ok := resp.MessageId.(*pb.Packet_SetAdfPowerResponse); !ok {
+		return fmt.Errorf("unexpected response type: %T", resp.MessageId)
+	}
+	return nil
 }
 
 // SetRfBand selects a STRAPS band preset. On the STRAPS board the firmware
