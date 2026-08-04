@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -20,6 +21,11 @@ import (
 	"github.com/OcupointInc/rf-control/client"
 	pb "github.com/OcupointInc/rf-control/controlpb"
 )
+
+// version is stamped at link time by the release workflow
+// (-X main.version=...): a tag name like "v1.2.3" for a tagged release, or
+// "latest-<sha>" for the rolling build of main. Local `go build` leaves "dev".
+var version = "dev"
 
 // verbose is set by the -v / --verbose flag (see addCommonFlags). When true,
 // transports hex-dump bytes sent and received and log timings.
@@ -340,12 +346,26 @@ func cmdStatus(args []string) error {
 
 	// "whalepod" hardware only has attenuators — no PLL, no RF/mixer/IF
 	// switches. Suppress those fields so the output reflects the device.
-	hasRFFrontend := s.BoardType != "whalepod"
+	hasRFFrontend := s.BoardType != "whalepod" && s.BoardType != "rf_switch"
 
 	fmt.Println("--- Device RF Status ---")
 	if s.BoardType != "" {
 		fmt.Printf("Board               : %s\n", s.BoardType)
 	}
+
+	// The SP8T switch board is the mirror image of the whalepod: its firmware
+	// stubs out the attenuator, PLL, and calibration path entirely, so every
+	// other field in GetStatusResponse is an uninitialised default. The
+	// selected channel is the only thing this board actually knows.
+	if s.BoardType == "rf_switch" {
+		if s.RfSwitchChannel == 0 {
+			fmt.Printf("RF switch channel   : off (all isolated)\n")
+		} else {
+			fmt.Printf("RF switch channel   : %d\n", s.RfSwitchChannel)
+		}
+		return nil
+	}
+
 	fmt.Printf("Channels enabled    : %v\n", s.ChannelsEnabled)
 	fmt.Printf("Calibration enabled : %v\n", s.CalibrationEnabled)
 	fmt.Printf("Frontend atten (dB) : %d\n", s.AttenuationDb)
@@ -904,6 +924,466 @@ func cmdSetClockSource(args []string) error {
 	return nil
 }
 
+func cmdSetLo(args []string) error {
+	fs := flag.NewFlagSet("set-lo", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		return usagef("usage: set-lo <MHz>  (Barracuda LMX2595 LO; 0 powers it down)")
+	}
+	mhz, err := strconv.Atoi(fs.Arg(0))
+	if err != nil || mhz < 0 || mhz > 20000 {
+		return usagef("invalid frequency %q (expected integer MHz, 0-20000)", fs.Arg(0))
+	}
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetLoFrequency(int32(mhz)); err != nil {
+		return err
+	}
+	fmt.Printf("OK (LO = %d MHz)\n", mhz)
+	return nil
+}
+
+func cmdSetDsa(args []string) error {
+	fs := flag.NewFlagSet("set-dsa", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		return usagef("usage: set-dsa <dB>  (Barracuda HMC1119, 0-31.75 dB in 0.25 dB steps)")
+	}
+	db, err := strconv.ParseFloat(fs.Arg(0), 64)
+	if err != nil || db < 0 || db > 31.75 {
+		return usagef("invalid attenuation %q (expected 0-31.75 dB)", fs.Arg(0))
+	}
+	quarter := int32(db*4 + 0.5) // 0.25 dB per LSB
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetDsaAttenuation(quarter); err != nil {
+		return err
+	}
+	fmt.Printf("OK (DSA = %.2f dB)\n", float64(quarter)/4)
+	return nil
+}
+
+func cmdSetChirp(args []string) error {
+	fs := flag.NewFlagSet("set-chirp", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	start := fs.Int("start", 11700, "ramp start frequency in MHz (VCO output)")
+	dev := fs.Int("dev", 1500, "chirp deviation / bandwidth in MHz")
+	timeUs := fs.Int("time", 35, "ramp time in microseconds")
+	mode := fs.String("mode", "sawtooth", "ramp shape: sawtooth|triangle")
+	triggered := fs.Bool("triggered", false, "one ramp per TXDATA trigger (else free-running)")
+	off := fs.Bool("off", false, "disable the ramp (hold CW at --start)")
+
+	// Extended waveform options. Every one of these defaults to zero/false, so
+	// omitting them all reproduces the classic five-parameter chirp exactly.
+	parabolic := fs.Bool("parabolic", false, "nonlinear (parabolic) ramp; --dev is the total span")
+	dualRamp := fs.Bool("dual-ramp", false, "second ramp rate from bank 1 (--ramp2-deviation/--ramp2-time)")
+	ramp2Dev := fs.Int("ramp2-deviation", 0, "dual ramp: bank-1 sweep span in MHz")
+	ramp2Time := fs.Int("ramp2-time", 0, "dual ramp: bank-1 ramp time in microseconds")
+	fastRamp := fs.Bool("fast-ramp", false, "two-slope triangular ramp; down-slope time from --fast-down-time")
+	fastDown := fs.Int("fast-down-time", 0, "fast ramp: down-slope time in microseconds")
+	fskKHz := fs.Int("fsk-khz", 0, "FSK deviation superimposed on the ramp, in kHz (0 = off)")
+	delayedStart := fs.Bool("delayed-start", false, "delay the ramp start by --delay-us")
+	rampDelay := fs.Bool("ramp-delay", false, "dwell for --delay-us between ramps")
+	delayUs := fs.Int("delay-us", 0, "delay/dwell duration in microseconds (used by --delayed-start/--ramp-delay/--trigger-delay)")
+	triDelay := fs.Bool("triangular-delay", false, "clipped triangular delay (requires --ramp-delay and --mode triangle)")
+	triggerDelay := fs.Bool("trigger-delay", false, "apply --delay-us when TXDATA triggers a ramp")
+	extStepClock := fs.Bool("external-step-clock", false, "TXDATA advances each ramp step (no internal step clock)")
+	txdataInvert := fs.Bool("txdata-invert", false, "take TXDATA events on the falling edge")
+	rampCompleteOut := fs.Bool("ramp-complete-out", false, "route the ramp-complete pulse to MUXOUT (costs lock detect on that pin)")
+	_ = fs.Parse(args)
+
+	var cm pb.ChirpMode
+	triangle := false
+	switch strings.ToLower(*mode) {
+	case "sawtooth", "saw":
+		cm = pb.ChirpMode_CHIRP_MODE_SAWTOOTH_CONTINUOUS
+		if *triggered {
+			cm = pb.ChirpMode_CHIRP_MODE_SAWTOOTH_TRIGGERED
+		}
+	case "triangle", "tri":
+		triangle = true
+		cm = pb.ChirpMode_CHIRP_MODE_TRIANGLE_CONTINUOUS
+		if *triggered {
+			cm = pb.ChirpMode_CHIRP_MODE_TRIANGLE_TRIGGERED
+		}
+	default:
+		return usagef("invalid --mode %q (expected sawtooth|triangle)", *mode)
+	}
+	if *start < 0 || *dev < 0 || *timeUs <= 0 {
+		return usagef("--start/--dev must be >= 0 and --time > 0")
+	}
+	// These all cross into unsigned wire fields, so a negative here would wrap
+	// into an enormous value instead of being rejected by the device.
+	for _, n := range []struct {
+		flag string
+		val  int
+	}{
+		{"--ramp2-deviation", *ramp2Dev},
+		{"--ramp2-time", *ramp2Time},
+		{"--fast-down-time", *fastDown},
+		{"--fsk-khz", *fskKHz},
+		{"--delay-us", *delayUs},
+	} {
+		if n.val < 0 {
+			return usagef("%s must be >= 0 (got %d)", n.flag, n.val)
+		}
+	}
+	// Pure logical constraints from the wire spec — check them here so the user
+	// gets the flag names back instead of a device-side refusal. Anything that
+	// depends on the hardware (RF ceiling, delay range at the current f_PFD,
+	// integer-N mode) is left to the firmware, which answers with a detail
+	// string naming the constraint.
+	if *parabolic && (*dualRamp || *fastRamp) {
+		return usagef("--parabolic excludes --dual-ramp and --fast-ramp")
+	}
+	if *triDelay && !*rampDelay {
+		return usagef("--triangular-delay requires --ramp-delay")
+	}
+	if *triDelay && !triangle {
+		return usagef("--triangular-delay requires --mode triangle")
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	locked, err := c.SetChirpEx(client.ChirpConfig{
+		StartFreqMHz:       int32(*start),
+		DeviationMHz:       int32(*dev),
+		RampTimeUs:         uint32(*timeUs),
+		Mode:               cm,
+		Enabled:            !*off,
+		Parabolic:          *parabolic,
+		DualRamp:           *dualRamp,
+		Ramp2DeviationMHz:  int32(*ramp2Dev),
+		Ramp2TimeUs:        uint32(*ramp2Time),
+		FastRamp:           *fastRamp,
+		FastRampDownTimeUs: uint32(*fastDown),
+		FskOnRampKHz:       uint32(*fskKHz),
+		DelayedStart:       *delayedStart,
+		RampDelay:          *rampDelay,
+		DelayUs:            uint32(*delayUs),
+		TriangularDelay:    *triDelay,
+		TxdataTriggerDelay: *triggerDelay,
+		ExternalStepClock:  *extStepClock,
+		TxdataInvert:       *txdataInvert,
+		MuxoutRampComplete: *rampCompleteOut,
+	})
+	if err != nil {
+		return err
+	}
+	if *off {
+		fmt.Printf("OK (ramp disabled; CW at %d MHz)\n", *start)
+		return nil
+	}
+
+	// Only mention the extended options that are actually in play, so the
+	// classic chirp keeps printing exactly the line it always did.
+	var opts []string
+	if *parabolic {
+		opts = append(opts, "parabolic")
+	}
+	if *dualRamp {
+		opts = append(opts, fmt.Sprintf("dual ramp %d MHz/%d us", *ramp2Dev, *ramp2Time))
+	}
+	if *fastRamp {
+		opts = append(opts, fmt.Sprintf("fast ramp, down %d us", *fastDown))
+	}
+	if *fskKHz > 0 {
+		opts = append(opts, fmt.Sprintf("FSK %d kHz", *fskKHz))
+	}
+	if *delayedStart {
+		opts = append(opts, fmt.Sprintf("delayed start %d us", *delayUs))
+	}
+	if *rampDelay {
+		opts = append(opts, fmt.Sprintf("ramp delay %d us", *delayUs))
+	}
+	if *triDelay {
+		opts = append(opts, "triangular delay")
+	}
+	if *triggerDelay {
+		opts = append(opts, fmt.Sprintf("trigger delay %d us", *delayUs))
+	}
+	if *extStepClock {
+		opts = append(opts, "external step clock")
+	}
+	if *txdataInvert {
+		opts = append(opts, "TXDATA inverted")
+	}
+	if *rampCompleteOut {
+		opts = append(opts, "ramp-complete on MUXOUT")
+	}
+	extra := ""
+	if len(opts) > 0 {
+		extra = " [" + strings.Join(opts, ", ") + "]"
+	}
+	trig := ""
+	if *triggered {
+		trig = ", triggered"
+	}
+	fmt.Printf("OK (chirp %d MHz + %d MHz over %d us, %s%s; locked=%v)%s\n",
+		*start, *dev, *timeUs, strings.ToLower(*mode), trig, locked, extra)
+	// With ramp-complete on MUXOUT the pin no longer carries digital lock
+	// detect, so the value printed above is the lock state from before the
+	// reroute. Say so rather than letting it read as live.
+	if *rampCompleteOut {
+		fmt.Fprintln(os.Stderr, "note: MUXOUT now carries ramp-complete, so locked= is the state sampled before the reroute, not a live indication")
+	}
+	return nil
+}
+
+func cmdSetFsk(args []string) error {
+	fs := flag.NewFlagSet("set-fsk", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	center := fs.Int("center", 11700, "FSK center frequency in MHz")
+	devKHz := fs.Int("dev-khz", 0, "FSK deviation in kHz (the hop is +/- this around --center)")
+	off := fs.Bool("off", false, "disable FSK (hold CW at --center)")
+	_ = fs.Parse(args)
+
+	if *center < 0 {
+		return usagef("--center must be >= 0 (got %d)", *center)
+	}
+	if *devKHz < 0 {
+		return usagef("--dev-khz must be >= 0 (got %d)", *devKHz)
+	}
+	if !*off && *devKHz == 0 {
+		return usagef("--dev-khz must be > 0 to enable FSK (or pass --off to revert to CW)")
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetFsk(int32(*center), uint32(*devKHz), !*off); err != nil {
+		return err
+	}
+	if *off {
+		fmt.Printf("OK (FSK disabled; CW at %d MHz)\n", *center)
+	} else {
+		fmt.Printf("OK (FSK %d MHz +/- %d kHz; data on TXDATA)\n", *center, *devKHz)
+	}
+	return nil
+}
+
+// cmdSetPhase takes its arguments positionally rather than as flags: the flag
+// package stops parsing at the first non-flag token, so a mixed
+// `set-phase psk --deg 90` would silently drop the degrees.
+func cmdSetPhase(args []string) error {
+	fs := flag.NewFlagSet("set-phase", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return usagef("usage: set-phase <off|psk|static> [degrees]  (Barracuda ADF4159 output phase; e.g. set-phase psk 90)")
+	}
+	var mode pb.PhaseMode
+	switch strings.ToLower(fs.Arg(0)) {
+	case "off", "none", "disable", "disabled":
+		mode = pb.PhaseMode_PHASE_MODE_OFF
+	case "psk", "txdata":
+		mode = pb.PhaseMode_PHASE_MODE_PSK
+	case "static", "adjust":
+		mode = pb.PhaseMode_PHASE_MODE_STATIC
+	default:
+		return usagef("invalid phase mode %q (expected off, psk, or static)", fs.Arg(0))
+	}
+	var deg float64
+	if fs.NArg() > 1 {
+		var err error
+		deg, err = strconv.ParseFloat(fs.Arg(1), 64)
+		if err != nil {
+			return usagef("invalid phase %q (expected degrees, e.g. 90 or -45)", fs.Arg(1))
+		}
+	} else if mode != pb.PhaseMode_PHASE_MODE_OFF {
+		return usagef("set-phase %s needs a phase in degrees (e.g. set-phase %s 90)", fs.Arg(0), fs.Arg(0))
+	}
+	// The firmware normalises into (-180, 180] before quantising, so anything
+	// inside a full turn is meaningful. Beyond that it's almost certainly a
+	// units mistake (millidegrees typed where degrees were wanted).
+	if deg < -360 || deg > 360 {
+		return usagef("phase %g is out of range (expected -360..360 degrees; the device normalises into (-180, 180])", deg)
+	}
+	milli := int32(math.Round(deg * 1000))
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetPhase(mode, milli); err != nil {
+		return err
+	}
+	switch mode {
+	case pb.PhaseMode_PHASE_MODE_OFF:
+		fmt.Println("OK (phase control off; phase word cleared)")
+	case pb.PhaseMode_PHASE_MODE_PSK:
+		fmt.Printf("OK (PSK on TXDATA, +/-%g deg)\n", deg)
+	case pb.PhaseMode_PHASE_MODE_STATIC:
+		fmt.Printf("OK (static phase increment %+g deg)\n", deg)
+	}
+	return nil
+}
+
+func cmdSetAdfRef(args []string) error {
+	fs := flag.NewFlagSet("set-adf-ref", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	// FULL-STATE like set-adf-loop / set-adf-power: every call programs all five
+	// fields, so the defaults here are the driver's Barracuda baseline (R = 1, no
+	// doubler, no /2, 8/9 prescaler, CP code 7) rather than "leave it alone".
+	//
+	// Each flag has a short alias matching the firmware's own control_tool, so
+	// the same command line works against either CLI.
+	var rCounter, cpCode int
+	var doubler, div2 bool
+	var prescaler string
+	fs.IntVar(&rCounter, "r-counter", 1, "reference divider R, 1-32")
+	fs.IntVar(&rCounter, "r", 1, "alias for --r-counter")
+	fs.IntVar(&cpCode, "cp-code", 7, "charge-pump current code, 0-15 (0.31-5 mA at RSET = 5.1k)")
+	fs.IntVar(&cpCode, "cp", 7, "alias for --cp-code")
+	fs.BoolVar(&doubler, "ref-doubler", false, "enable the reference doubler (needs REFIN <= 50 MHz; limits --cp-code to 0-7)")
+	fs.BoolVar(&doubler, "doubler", false, "alias for --ref-doubler")
+	fs.BoolVar(&div2, "ref-div2", false, "divide by 2 after the R counter (50% PFD duty, required for CSR)")
+	fs.BoolVar(&div2, "div2", false, "alias for --ref-div2")
+	fs.StringVar(&prescaler, "prescaler", "8/9", "RF prescaler: 4/5 (RF <= 8 GHz, INT >= 23) or 8/9 (INT >= 75)")
+	_ = fs.Parse(args)
+
+	if rCounter < 1 || rCounter > 32 {
+		return usagef("invalid --r-counter %d (expected 1-32)", rCounter)
+	}
+	if cpCode < 0 || cpCode > 15 {
+		return usagef("invalid --cp-code %d (expected 0-15)", cpCode)
+	}
+	var pre89 bool
+	switch strings.ToLower(strings.TrimSpace(prescaler)) {
+	case "4/5", "45", "4-5":
+		pre89 = false
+	case "8/9", "89", "8-9":
+		pre89 = true
+	default:
+		return usagef("invalid --prescaler %q (expected 4/5 or 8/9)", prescaler)
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetAdfRefConfig(client.AdfRefConfig{
+		RCounter:      uint32(rCounter),
+		RefDoubler:    doubler,
+		RefDiv2:       div2,
+		Prescaler89:   pre89,
+		CpCurrentCode: uint32(cpCode),
+	}); err != nil {
+		return err
+	}
+	preName := "4/5"
+	if pre89 {
+		preName = "8/9"
+	}
+	fmt.Printf("OK (R=%d, doubler=%v, div2=%v, prescaler=%s, CP code=%d)\n",
+		rCounter, doubler, div2, preName, cpCode)
+	return nil
+}
+
+// cmdSetAdfLoop programs the ADF4159 loop-quality block. This request is
+// full-state: the device applies all five fields every time, so an omitted flag
+// turns that feature OFF rather than leaving it as it was.
+func cmdSetAdfLoop(args []string) error {
+	fs := flag.NewFlagSet("set-adf-loop", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	var bleed bool
+	csr := fs.Bool("csr", false, "cycle slip reduction (needs --cp-code 0 and --ref-div2 on set-adf-ref)")
+	fs.BoolVar(&bleed, "negative-bleed", false, "enable negative bleed current")
+	fs.BoolVar(&bleed, "bleed", false, "alias for --negative-bleed")
+	bleedCode := fs.Int("bleed-code", 0, "negative bleed magnitude, 0-7 (3.73-916 uA)")
+	lolDisable := fs.Bool("lol-disable", false, "disable loss-of-lock indication (more robust lock detect)")
+	integerN := fs.Bool("integer-n", false, "integer-N mode: sigma-delta off, FRAC forced 0 (blocks chirp/FSK/PSK/phase)")
+	_ = fs.Parse(args)
+
+	if *bleedCode < 0 || *bleedCode > 7 {
+		return usagef("invalid --bleed-code %d (expected 0-7)", *bleedCode)
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetAdfLoopConfig(client.AdfLoopConfig{
+		Csr:               *csr,
+		NegativeBleed:     bleed,
+		NegativeBleedCode: uint32(*bleedCode),
+		LolDisable:        *lolDisable,
+		IntegerNMode:      *integerN,
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("OK (csr=%v, negative-bleed=%v code=%d, lol-disable=%v, integer-n=%v)\n",
+		*csr, bleed, *bleedCode, *lolDisable, *integerN)
+	return nil
+}
+
+// cmdSetAdfPower drives the ADF4159 power controls. Full-state like
+// set-adf-loop: `set-adf-power` with no flags returns the part to normal
+// running (powered up, charge pump active, counters out of reset).
+func cmdSetAdfPower(args []string) error {
+	fs := flag.NewFlagSet("set-adf-power", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	var threeState bool
+	powerDown := fs.Bool("power-down", false, "software power-down (registers retained)")
+	fs.BoolVar(&threeState, "cp-three-state", false, "three-state the charge pump (parks VTUNE)")
+	fs.BoolVar(&threeState, "cp-tristate", false, "alias for --cp-three-state")
+	counterReset := fs.Bool("counter-reset", false, "hold the RF counters in reset")
+	_ = fs.Parse(args)
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+	if err := c.SetAdfPower(client.AdfPowerConfig{
+		PowerDown:    *powerDown,
+		CpThreeState: threeState,
+		CounterReset: *counterReset,
+	}); err != nil {
+		return err
+	}
+	if !*powerDown && !threeState && !*counterReset {
+		fmt.Println("OK (ADF4159 running: powered up, charge pump active, counters released)")
+	} else {
+		fmt.Printf("OK (power-down=%v, cp-three-state=%v, counter-reset=%v)\n",
+			*powerDown, threeState, *counterReset)
+	}
+	return nil
+}
+
 func cmdSetPll(args []string) error {
 	fs := flag.NewFlagSet("set-pll", flag.ExitOnError)
 	common := &commonFlags{}
@@ -929,6 +1409,53 @@ func cmdSetPll(args []string) error {
 		return err
 	}
 	fmt.Printf("OK (PLL LO = %d MHz)\n", mhz)
+	return nil
+}
+
+// cmdSetSwitchChannel drives the PE42582 SP8T switch board. Deliberately not
+// named "set-channel": that reads as a singular of the unrelated `set-channels
+// <on|off>`, and the two would silently do very different things to a typo.
+func cmdSetSwitchChannel(args []string) error {
+	fs := flag.NewFlagSet("set-switch-channel", flag.ExitOnError)
+	common := &commonFlags{}
+	addCommonFlags(fs, common)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		return usagef("usage: set-switch-channel <1-8|off>  (SP8T RF-switch board; e.g. set-switch-channel 3)")
+	}
+
+	// Channel 0 is the firmware's all-off / all-isolated state. Spell it "off"
+	// on the command line so isolating the switch is an explicit word rather
+	// than a magic zero.
+	arg := fs.Arg(0)
+	var ch int
+	switch strings.ToLower(arg) {
+	case "off", "none", "isolate":
+		ch = 0
+	default:
+		var err error
+		ch, err = strconv.Atoi(arg)
+		if err != nil || ch < 0 || ch > 8 {
+			return usagef("invalid channel %q (expected 1-8, or \"off\")", arg)
+		}
+	}
+
+	tx, err := common.makeTransport()
+	if err != nil {
+		return err
+	}
+	c := client.New(tx)
+	defer c.Close()
+
+	if err := c.SetRfSwitchChannel(int32(ch)); err != nil {
+		return err
+	}
+	if ch == 0 {
+		fmt.Println("OK (all channels off / isolated)")
+	} else {
+		fmt.Printf("OK (channel %d)\n", ch)
+	}
 	return nil
 }
 
@@ -1556,7 +2083,8 @@ Commands:
                            rf_switch_channel, and a network{} block (static_ip,
                            static_gateway, static_subnet, hostname).
   status                 Print live RF status (channels, attenuation,
-                         LO frequency, switch positions).
+                         LO frequency, switch positions). On the SP8T
+                         RF-switch board, prints the selected channel.
   gpio-selftest          Run the firmware's control-GPIO diagnostic (alias:
                          selftest). Drives every control pin low then high and
                          reads the pad back, printing a per-pin pass/fail table.
@@ -1574,9 +2102,61 @@ Commands:
   set-clock <internal|external>
                          Select the STRAPS reference clock (SI53301 CLK_SEL):
                          internal on-board oscillator vs external reference.
-  set-pll <MHz>          Tune the STRAPS LMX2595 LO (e.g. 3500).
+  set-pll <MHz>          Tune the STRAPS LMX2595 LO (e.g. 3500). On Barracuda
+                         this tunes the ADF4159 VCO CW tone.
   set-band <band>        Apply a STRAPS band preset (switches + LO in one shot).
                          Accepts a span like 1800-2700, an RF_BAND_* name, or 0-4.
+
+  Barracuda RF module:
+  set-lo <MHz>           Tune the LMX2595 LO (0 powers it down).
+  set-dsa <dB>           HMC1119 attenuation, 0-31.75 dB in 0.25 dB steps.
+  set-chirp [flags]      Program/arm the ADF4159 FMCW ramp. Flags:
+                           --start MHz (11700)  --dev MHz (1500)  --time us (35)
+                           --mode sawtooth|triangle  --triggered  --off
+                         Extended waveform options (all default off — omit them
+                         all for the classic chirp):
+                           --parabolic  --dual-ramp --ramp2-deviation MHz
+                           --ramp2-time us  --fast-ramp --fast-down-time us
+                           --fsk-khz kHz  --delayed-start  --ramp-delay
+                           --delay-us us  --triangular-delay  --trigger-delay
+                           --external-step-clock  --txdata-invert
+                           --ramp-complete-out
+                         Reports the ADF4159 lock state after programming (with
+                         --ramp-complete-out that's the state from before MUXOUT
+                         was rerouted, not a live reading).
+  set-fsk [flags]        ADF4159 FSK: --center MHz, --dev-khz kHz (the hop is
+                         +/- that around center), --off to revert to CW. The
+                         data stream itself is driven on the TXDATA pin.
+  set-phase <off|psk|static> [degrees]
+                         ADF4159 output phase, e.g. "set-phase psk 90". psk =
+                         +/-degrees toggled from TXDATA; static = a one-shot
+                         increment relative to the current phase; off clears the
+                         phase word. Hardware resolution is 360/4096 (~0.088)
+                         degrees.
+  set-adf-ref [flags]    ADF4159 reference path:
+                         f_PFD = REFIN x (1+doubler) / (R x (1+div2)).
+                           --r-counter 1-32 (1)   --cp-code 0-15 (7)
+                           --ref-doubler  --ref-div2
+                           --prescaler 4/5|8/9 (8/9)
+                         FULL STATE: the defaults above are the Barracuda
+                         baseline, applied to anything you leave out. The device
+                         revalidates the armed waveform at the new f_PFD and
+                         refuses a change that would overrun the RF ceiling, so
+                         program a frequency first.
+  set-adf-loop [flags]   ADF4159 loop quality: --csr, --negative-bleed,
+                         --bleed-code 0-7, --lol-disable, --integer-n.
+                         FULL STATE: every call applies all five, so a flag you
+                         omit is turned OFF, not left alone.
+  set-adf-power [flags]  ADF4159 power controls: --power-down, --cp-three-state,
+                         --counter-reset. FULL STATE like set-adf-loop — with no
+                         flags it returns the part to normal running.
+                         (The ADF4159 flags above also accept the firmware
+                         control_tool's shorter spellings: --r, --cp, --doubler,
+                         --div2, --bleed, --cp-tristate.)
+  set-switch-channel <1-8|off>
+                         Route the SP8T RF-switch board's common port to one of
+                         the eight channels, or "off" to isolate all of them.
+  version                Print the binary's version and exit.
 
 Transport selection (place before the command):
   --usb DEVICE   Use that USB serial device, e.g. /dev/cu.usbmodem101.
@@ -1620,6 +2200,18 @@ func main() {
 	cmdIdx := -1
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		// `version` and `help` also spell as flags, and a flag spelling can
+		// never be picked as the subcommand below. Catch them here, before the
+		// `--flag value` rule mistakes one for a transport flag. The loop stops
+		// at the subcommand, so a later `--help` still reaches its own flagset.
+		switch a {
+		case "-V", "--version":
+			fmt.Println(version)
+			return
+		case "-h", "--help":
+			usage()
+			return
+		}
 		if !strings.HasPrefix(a, "-") {
 			cmdIdx = i
 			break
@@ -1670,8 +2262,29 @@ func main() {
 		err = cmdSetClockSource(rest)
 	case "set-pll":
 		err = cmdSetPll(rest)
+	case "set-lo":
+		err = cmdSetLo(rest)
+	case "set-dsa":
+		err = cmdSetDsa(rest)
+	case "set-chirp":
+		err = cmdSetChirp(rest)
+	case "set-fsk":
+		err = cmdSetFsk(rest)
+	case "set-phase":
+		err = cmdSetPhase(rest)
+	case "set-adf-ref":
+		err = cmdSetAdfRef(rest)
+	case "set-adf-loop":
+		err = cmdSetAdfLoop(rest)
+	case "set-adf-power":
+		err = cmdSetAdfPower(rest)
 	case "set-band":
 		err = cmdSetBand(rest)
+	case "set-switch-channel":
+		err = cmdSetSwitchChannel(rest)
+	case "version":
+		fmt.Println(version)
+		return
 	case "help", "-h", "--help":
 		usage()
 		return

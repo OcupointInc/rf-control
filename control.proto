@@ -10,16 +10,15 @@
 //
 // Do not hand-edit controlpb/control.pb.go.
 //
-// IN SYNC (as of 2026-07-21): the former SetClockSource DIVERGENCE is resolved.
-// The canonical firmware proto has adopted the STRAPS reference-clock select at
-// the same Packet tags (30/31) this library defined ahead of it, but with a
-// `bool external` field — the OPPOSITE sense to this library's earlier
-// `bool internal` — and GetStatusResponse.clock_source_external (tag 12). This
-// copy now tracks canonical byte-for-byte, including the Barracuda additions
-// (ChirpMode; SetLoFrequency/SetChirp/SetDsaAttenuation; Discovery; and the
-// pll_locked/ref_locked status fields). See client/client.go SetClockSource,
-// which still takes `internal bool` and inverts it onto the wire so the
-// library/CLI semantics are unchanged.
+// IN SYNC (as of 2026-08-04): tracks canonical byte-for-byte, including the
+// Barracuda LMX2595 register-readback diagnostic (tags 50/51) and the ADF4159
+// extended-control block (SetChirpRequest fields 6-20; SetFsk/SetPhase/
+// SetAdfRefConfig/SetAdfLoopConfig/SetAdfPower at tags 52-61). Historical note:
+// the former SetClockSource DIVERGENCE was resolved 2026-07-21 — the canonical
+// proto adopted the STRAPS reference-clock select at the tags (30/31) this
+// library defined ahead of it, but with a `bool external` field, the OPPOSITE
+// sense to this library's earlier `bool internal`. client/client.go
+// SetClockSource still takes `internal bool` and inverts it onto the wire.
 syntax = "proto3";
 
 package control;
@@ -146,6 +145,148 @@ message SaveConfigRequest {
 
 message SaveConfigResponse {}
 
+// Result of probing a pin the MCU does not drive: apply the internal pull-up,
+// then the internal pull-down, and see whether the pin followed. Values match
+// gpio_stuck_t in gpio_verify.h exactly — do not reorder.
+enum PinProbe {
+  PIN_PROBE_FLOATING = 0;  // followed both pulls — nothing is driving it
+  PIN_PROBE_LOW      = 1;  // held low against the internal pull-up
+  PIN_PROBE_HIGH     = 2;  // held high against the internal pull-down
+}
+
+// Barracuda-only bring-up diagnostics.
+//
+// These used to be packed into switch-board fields (attenuation_db carried the
+// ADF readback word, cal_attenuation_db the LMK registers, rf_switch_channel the
+// I2C levels). That was expedient during bring-up but it cost real debugging
+// time: one block silently clobbered another's result, and host-side decoders
+// matched the wrong field by prefix. Everything Barracuda-specific lives here
+// now, named for what it actually is.
+message BarracudaDiagnostics {
+  // ADF4159 SPI round trip — the 37-bit ramp-accumulator readback, taken once at
+  // boot (it reprograms the part and restores, so it must not run per-poll).
+  // Purely digital: valid with no lock, no loop filter and no RF.
+  //   0xC8000000 = pass. INT = word >> 25 = 100, FRAC = word & 0x1FFFFFF = 0
+  //   0x00000000 = MUXOUT never moved         all-ones = stuck high
+  uint32 adf_readback_word = 1;
+  bool   adf_readback_ran  = 2;   // false = the readback never executed
+
+  // LMX2595 register readback over its MUXout/SDO, which lands on the MCU's real
+  // SPI MISO with no level shifter. Needs no tuning, no VCO cal and no lock —
+  // only power and a working bus, so it is a clean bidirectional link test.
+  // Expect r0 = 0x2510 (the configured 0x251C with MUXOUT_LD_SEL and FCAL_EN
+  // cleared for the read). Both zero = SDO dead or part not responding.
+  uint32 lmx_r0 = 3;
+  uint32 lmx_r1 = 4;
+
+  // LMK05318B, all read-only so it is safe on every poll. r10 is the address
+  // readback: 0xC8 = 0x64 << 1, the part reporting its own address. Note it can
+  // ACK while returning 0x00 — that state means "needs a power cycle", not a
+  // hardware fault, and only a power cycle re-runs the RAM config.
+  bool   lmk_present  = 5;        // false = no ACK at all
+  uint32 lmk_r10      = 6;
+  uint32 lmk_status0  = 7;        // R13
+  uint32 lmk_status1  = 8;        // R14
+
+  // I2C0 idle levels. The bus pull-ups are 4.7k to V_3V3_ID, so with that rail
+  // up both must read HIGH when released. FLOATING means no effective pull-up
+  // (V_3V3_ID down or FB_id open); LOW means something is holding the bus.
+  PinProbe i2c_sda_level = 9;
+  PinProbe i2c_scl_level = 10;
+  // Devices confirmed by routine non-disruptive status probes. Barracuda
+  // currently probes only the LMK here; EEPROM reachability is tested by its
+  // dedicated read command rather than by sweeping the entire address space.
+  uint32   i2c_device_count = 11;
+
+  // Return-path probes. LOCK_DET is the ADF4159's MUXOUT through the TXB0104;
+  // SPI_MISO is the LMX2595's MUXout direct. FLOATING with a module fitted means
+  // nothing is driving that net; compare against a module-removed baseline,
+  // where FLOATING is the correct answer for both.
+  PinProbe lock_det_level = 12;
+  PinProbe spi_miso_level = 13;
+
+  // Result of the last lmk05318b_init() config apply. HW_SW_CTRL = 1 makes the
+  // RAM register set authoritative, so this ~334-register table is the entire
+  // clock plan — if part of it fails to land, individual outputs misbehave while
+  // the device still ACKs and still reports a healthy R10. cfg_first_mismatch is
+  // the first address whose stable writable bits did not read back (0xFFFF =
+  // none), which localises a partial config to a register block. Read-only,
+  // live-status, self-clearing, unimplemented and indirect-data bytes are
+  // excluded from the comparison.
+  uint32 lmk_cfg_writes         = 14;
+  uint32 lmk_cfg_mismatches     = 15;
+  uint32 lmk_cfg_first_mismatch = 16;
+  // Every address whose stable writable configuration bits failed readback.
+  repeated uint32 lmk_cfg_mismatch_addrs = 17;
+
+  // ADF4159 link self-test — the forced-override MUXOUT probe. Commands MUXOUT
+  // to DVDD / DGND / three-state and, for each, forces LOCK_DET to both
+  // polarities first and reads what it settles back to. Forcing is what makes
+  // the result mean anything at the MCU end: the TXB0104's ~4k output keeper
+  // otherwise holds its last level, so "the ADF is driving low" and "nothing is
+  // driving" read identically. Six observations, each sampled twice: bits 0-5
+  // are the SLOW sample (2 ms after release), bits 8-13 the same six FAST
+  // (50 us — past the TXB0104's release-edge transient, which with the base
+  // board's 1 nF filter cap runs tau ~= 4 us). 1 = read HIGH. Fast and slow
+  // agreeing means the level is settled; disagreement means still slewing and
+  // the slow sample is the one to believe.
+  //   bit0/1  MUXOUT DVDD        forced low / high  -> expect 1 / 1
+  //   bit2/3  MUXOUT DGND        forced low / high  -> expect 0 / 0
+  //   bit4/5  MUXOUT three-state forced low / high  -> expect 0 / 1
+  // The three-state pair is the negative control and must follow the force.
+  // Reading the slow byte:
+  //   0x23 = pass — both rails commanded and observed; the link works
+  //   0x2A = net follows the MCU every time -> nothing is driving MUXOUT, so
+  //          the return path is fine and the ADF is not executing writes
+  //   0x00 / 0x3F = net held low / high even against the force: a short, a
+  //          dead pad, or an UNPOWERED device clamping the net through its ESD
+  //          diodes — module power absent reads exactly like a short here, so
+  //          check module power (is the LMX also silent?) before probing.
+  // Taken once at boot: an R0 write is the ADF's frequency-load event, so this
+  // must not run per-poll.
+  // Backward-compatible normalized slow sample (bits 0-5 only). A pass is
+  // exactly 0x23; use adf_link_probe_raw for timing/marginality diagnostics.
+  uint32 adf_link_probe     = 18;
+  bool   adf_link_probe_ran = 19;   // false = the probe never executed
+
+  // LMK R72 CH_ACT (RO, live): bit0 CH0_1, bit1 CH2_3, bit2 CH4, bit3 CH5,
+  // bit4 CH6, bit5 CH7 — 1 = that channel's regulator/divider is powered and
+  // active. The Plan A expected value is 0x1D (CH0_1 + CH4 + CH5 + CH6). This
+  // is the LMK's own claim about each output channel, so a dead output pin
+  // with its ACT bit set is a board-level fault, not a configuration fault.
+  uint32 lmk_ch_act = 20;
+
+  // True when SDA/SCL pad levels were sampled this poll. Status samples them
+  // without changing their I2C pin function, and only when the LMK is
+  // unreachable. When false, i2c_sda_level / i2c_scl_level carry no data.
+  bool i2c_pins_probed = 21;
+
+  // LMX2595 live configuration/status readback. These are the registers most
+  // useful for a non-disruptive production self-test: output power/down state,
+  // output muxes, channel divider, lock state, and VCO calibration results.
+  uint32 lmx_r44  = 22;
+  uint32 lmx_r45  = 23;
+  uint32 lmx_r46  = 24;
+  uint32 lmx_r75  = 25;
+  uint32 lmx_r110 = 26;
+  uint32 lmx_r111 = 27;
+  uint32 lmx_r112 = 28;
+  // Raw R110[10:9] rb_LD_VTUNE: 0/3 = unlocked, 1 = invalid, 2 = locked.
+  uint32 lmx_lock_state = 29;
+  bool   lmx_locked = 30;
+  // True when the stable programmed registers above match the driver's shadow
+  // image. Read-only live status/calibration fields R110-R112 are not compared.
+  bool   lmx_readback_ok = 31;
+
+  // Normalized results for production tests. adf_link_ok requires both the
+  // fast and slow six-bit samples to equal 0x23; raw 0x2323 is therefore PASS.
+  bool adf_link_ok = 32;
+  bool adf_readback_ok = 33; // accumulator word equals 0xC8000000
+  // Original two-sample encoding: slow bits 0-5, fast bits 8-13. A clean pass
+  // is 0x2323. Kept separately so adf_link_probe remains simple for old tests.
+  uint32 adf_link_probe_raw = 34;
+}
+
 message GetStatusResponse {
   bool calibration_enabled = 1;
   int32 attenuation_db = 2;
@@ -175,6 +316,9 @@ message GetStatusResponse {
   bool pll_locked = 13;
   // Barracuda: LMK05318B locked to the 10 MHz reference (false = holdover/free-run).
   bool ref_locked = 14;
+  // Barracuda only; absent on every other variant. Host tools should gate on
+  // board_type == "barracuda" rather than on presence.
+  BarracudaDiagnostics barracuda = 15;
 }
 
 message GetConfigRequest {}
@@ -188,6 +332,10 @@ message GetConfigResponse {
   string serial_number = 7;
   bytes mac_address = 8;
   string firmware_version = 9;
+  // Factory-unique 64-bit flash/board ID exposed by the Pico SDK, formatted
+  // as 16 hexadecimal characters. This is distinct from serial_number, which
+  // is user-configurable test/asset metadata.
+  string unique_board_id = 10;
 }
 
 // EEPROM access (AT24C01D, 128 bytes). address/length are byte offsets into
@@ -244,7 +392,28 @@ message SetChirpRequest {
   uint32 ramp_time_us  = 3;  // ramp duration in microseconds (e.g. 35)
   ChirpMode mode       = 4;
   bool enabled         = 5;  // true = arm/run the ramp, false = CW at start freq
+  // ── Extended waveform options (all zero/false = the classic 5-field chirp) ──
+  bool parabolic = 6;              // nonlinear ramp (§10.5); deviation_mhz is the TOTAL span.
+                                   // Mutually exclusive with dual_ramp/fast_ramp.
+  bool dual_ramp = 7;              // second ramp rate in bank 1 (fields 8/9)
+  int32 ramp2_deviation_mhz = 8;   // dual ramp: bank-1 sweep span
+  uint32 ramp2_time_us = 9;        // dual ramp: bank-1 ramp time
+  bool fast_ramp = 10;             // two-slope triangular; down-slope time in field 11
+  uint32 fast_ramp_down_time_us = 11;
+  uint32 fsk_on_ramp_khz = 12;     // FSK deviation superimposed on the ramp; 0 = off
+  bool delayed_start = 13;         // delay ramp start by delay_us
+  bool ramp_delay = 14;            // dwell of delay_us between ramps
+  uint32 delay_us = 15;            // duration used by fields 13/14/17
+  bool triangular_delay = 16;      // clipped triangular (requires ramp_delay + a triangle mode)
+  bool txdata_trigger_delay = 17;  // apply delay_us when TXDATA triggers a ramp
+  bool external_step_clock = 18;   // TXDATA pin advances each ramp step (no internal clock)
+  bool txdata_invert = 19;         // TXDATA events on the falling edge
+  bool muxout_ramp_complete = 20;  // route the ramp-complete pulse to MUXOUT
+                                   // (sacrifices lock-detect on that pin while enabled)
 }
+// NOTE: with muxout_ramp_complete the MUXOUT pin no longer carries lock detect,
+// so `locked` here (and pll_locked in GetStatus) is not meaningful while it is
+// routed — the firmware returns the lock state sampled BEFORE rerouting.
 message SetChirpResponse {
   bool locked = 1;           // ADF4159 reported lock after programming
 }
@@ -307,6 +476,73 @@ message GpioSelfTestResponse {
   repeated GpioPinResult pins = 2;
 }
 
+// Non-disruptive batched LMX2595 register readback for production diagnostics.
+// Up to 16 addresses may be requested per transaction. The response arrays are
+// index-aligned. Only R0..R112 are valid.
+message Lmx2595RegisterReadRequest {
+  repeated uint32 addresses = 1;
+}
+
+message Lmx2595RegisterReadResponse {
+  repeated uint32 addresses = 1;
+  repeated uint32 values = 2;
+  bool success = 3;
+}
+
+// ADF4159 FSK modulation (Barracuda). Programs center + deviation and enables
+// FSK; the data stream itself is applied on the TXDATA pin by external
+// hardware/test equipment. enabled=false reverts to CW at center_freq_mhz.
+message SetFskRequest {
+  int32 center_freq_mhz = 1;
+  uint32 deviation_khz = 2;  // hop is ±deviation around center
+  bool enabled = 3;
+}
+message SetFskResponse {}
+
+// ADF4159 output-phase control (Barracuda).
+enum PhaseMode {
+  PHASE_MODE_OFF = 0;     // PSK and phase adjust disabled, phase word cleared
+  PHASE_MODE_PSK = 1;     // PSK via TXDATA: +phase when high, −phase when low
+  PHASE_MODE_STATIC = 2;  // one-shot static phase increment (relative to current phase)
+}
+message SetPhaseRequest {
+  PhaseMode mode = 1;
+  int32 phase_millidegrees = 2;  // e.g. 90000 = +90°; hardware resolution 360°/4096
+}
+message SetPhaseResponse {}
+
+// ADF4159 reference-path configuration (Barracuda). f_PFD = REFIN×(1+doubler) /
+// (r_counter×(1+div2)). The firmware revalidates the armed waveform at the new
+// f_PFD and refuses (INVALID_REQUEST) any change that would push the output
+// past the RF ceiling. Requires a frequency to have been programmed first.
+message SetAdfRefConfigRequest {
+  uint32 r_counter = 1;        // 1..32
+  bool ref_doubler = 2;        // REFIN ≤ 50 MHz required; CP codes 0..7 only
+  bool ref_div2 = 3;           // ÷2 after R counter (50% PFD duty, needed for CSR)
+  bool prescaler_8_9 = 4;      // false = 4/5 (RF ≤ 8 GHz, INT ≥ 23); true = 8/9 (INT ≥ 75)
+  uint32 cp_current_code = 5;  // 0..15, 0.31..5 mA at RSET = 5.1 kΩ
+}
+message SetAdfRefConfigResponse {}
+
+// ADF4159 loop-quality features (Barracuda). FULL-STATE: every call applies all
+// five fields; omitted fields fall back to their zero-value (= feature off).
+message SetAdfLoopConfigRequest {
+  bool csr = 1;                    // cycle slip reduction (needs CP code 0, +PD polarity)
+  bool negative_bleed = 2;
+  uint32 negative_bleed_code = 3;  // 0..7 → 3.73..916 µA
+  bool lol_disable = 4;            // disable loss-of-lock indication (more robust lock detect)
+  bool integer_n_mode = 5;         // Σ-Δ off, FRAC forced 0; disables chirp/FSK/PSK/phase
+}
+message SetAdfLoopConfigResponse {}
+
+// ADF4159 power controls (Barracuda). FULL-STATE, like SetAdfLoopConfig.
+message SetAdfPowerRequest {
+  bool power_down = 1;     // software power-down (registers retained)
+  bool cp_three_state = 2; // charge pump three-stated
+  bool counter_reset = 3;  // RF counters held in reset
+}
+message SetAdfPowerResponse {}
+
 // Packet message with all request and response types
 message Packet {
   oneof message_id {
@@ -357,5 +593,19 @@ message Packet {
     // a wire-tag collision when those branches merge.
     GpioSelfTestRequest gpio_self_test_request = 48;
     GpioSelfTestResponse gpio_self_test_response = 49;
+    // Barracuda LMX2595 arbitrary register readback diagnostic.
+    Lmx2595RegisterReadRequest lmx2595_register_read_request = 50;
+    Lmx2595RegisterReadResponse lmx2595_register_read_response = 51;
+    // Barracuda ADF4159 extended control. 40-47 stay reserved for OTA.
+    SetFskRequest set_fsk_request = 52;
+    SetFskResponse set_fsk_response = 53;
+    SetPhaseRequest set_phase_request = 54;
+    SetPhaseResponse set_phase_response = 55;
+    SetAdfRefConfigRequest set_adf_ref_config_request = 56;
+    SetAdfRefConfigResponse set_adf_ref_config_response = 57;
+    SetAdfLoopConfigRequest set_adf_loop_config_request = 58;
+    SetAdfLoopConfigResponse set_adf_loop_config_response = 59;
+    SetAdfPowerRequest set_adf_power_request = 60;
+    SetAdfPowerResponse set_adf_power_response = 61;
   }
 }
