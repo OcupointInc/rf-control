@@ -136,14 +136,14 @@ rf-control-gui --ip 192.168.50.25 apply ./rf-profile.json
 **macOS Intel**
 
 ```bash
-"./Ocupoint RF Control.app/Contents/MacOS/rf-control-gui-darwin-amd64" \
+"./Ocupoint RF Control.app/Contents/MacOS/rf-control" \
   --ip 192.168.50.25 apply ./rf-profile.json
 ```
 
 **macOS Apple silicon**
 
 ```bash
-"./Ocupoint RF Control.app/Contents/MacOS/rf-control-gui-darwin-arm64" \
+"./Ocupoint RF Control.app/Contents/MacOS/rf-control" \
   --ip 192.168.50.25 apply ./rf-profile.json
 ```
 

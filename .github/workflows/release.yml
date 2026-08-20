@@ -315,7 +315,16 @@ jobs:
           npm run check
 
       - name: Install pinned Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+        run: |
+          for attempt in 1 2 3; do
+            if go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0; then
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Build and package unified macOS GUI and CLI
         working-directory: cmd/rf-control-gui
@@ -326,7 +335,7 @@ jobs:
           else
             VERSION="latest-$(git rev-parse --short HEAD)"
           fi
-          EXECUTABLE="rf-control-gui-darwin-${{ matrix.goarch }}"
+          EXECUTABLE="rf-control"
           wails build -clean -trimpath -m -platform darwin/${{ matrix.goarch }} -ldflags "-s -w -X github.com/OcupointInc/rf-control/internal/buildinfo.Version=${VERSION}" -o "${EXECUTABLE}"
           BUNDLE="build/bin/rf-control.app"
           ACTUAL_VERSION="$("${BUNDLE}/Contents/MacOS/${EXECUTABLE}" version)"
