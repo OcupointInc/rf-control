@@ -1,24 +1,11 @@
-// control.proto — SYNCED copy of the RF-instrument firmware control protocol.
+// control.proto — synced copy of the canonical RF-instrument firmware protocol.
 //
-// The CANONICAL definition lives in the firmware repo
-// (github.com/OcupointInc/wiznet-ethernet-firmware, examples/dhcp_dns/control.proto).
-// This copy exists so the rf-control Go library can generate its own bindings;
-// keep it byte-for-byte identical to the canonical file EXCEPT the go_package
-// line below. After syncing, regenerate the Go bindings:
+// Canonical source: fw-discovery/examples/dhcp_dns/control.proto. Keep this file
+// byte-for-byte identical except for this header and go_package, then regenerate:
 //
 //   protoc -I. --go_out=. --go_opt=module=github.com/OcupointInc/rf-control control.proto
 //
 // Do not hand-edit controlpb/control.pb.go.
-//
-// IN SYNC (as of 2026-08-04): tracks canonical byte-for-byte, including the
-// Barracuda LMX2595 register-readback diagnostic (tags 50/51) and the ADF4159
-// extended-control block (SetChirpRequest fields 6-20; SetFsk/SetPhase/
-// SetAdfRefConfig/SetAdfLoopConfig/SetAdfPower at tags 52-61). Historical note:
-// the former SetClockSource DIVERGENCE was resolved 2026-07-21 — the canonical
-// proto adopted the STRAPS reference-clock select at the tags (30/31) this
-// library defined ahead of it, but with a `bool external` field, the OPPOSITE
-// sense to this library's earlier `bool internal`. client/client.go
-// SetClockSource still takes `internal bool` and inverts it onto the wire.
 syntax = "proto3";
 
 package control;
@@ -154,6 +141,68 @@ enum PinProbe {
   PIN_PROBE_HIGH     = 2;  // held high against the internal pull-down
 }
 
+// Feature discovery for Barracuda hosts. These flags describe protocol/firmware
+// support, not whether a feature is currently enabled.
+message BarracudaCapabilities {
+  bool extended_chirp = 1;
+  bool fsk = 2;
+  bool phase = 3;
+  bool adf_ref_config = 4;
+  bool adf_loop_config = 5;
+  bool adf_power = 6;
+  bool lmx_register_read = 7;
+  bool gpio_self_test = 8;
+  uint32 adf_max_frequency_mhz = 9;
+  uint32 max_lmx_register_batch = 10;
+  bool lmk_reference_frequency = 11;
+  uint32 lmk_reference_min_hz = 12;
+  uint32 lmk_reference_max_hz = 13;
+  bool equalized_sweep = 14;
+  uint32 equalized_sweep_max_points = 15;
+  uint32 dsa_min_latch_interval_us = 16;
+  bool lmx_output_power = 17;
+}
+
+// Authoritative ADF4159 driver-shadow state. The ADF4159 is write-only except
+// for accumulator readback, so these fields report what the firmware most
+// recently programmed; `pll_locked` remains the independent electrical result.
+message Adf4159State {
+  bool ready = 1;
+  uint32 pfd_frequency_hz = 2;
+  int32 frequency_mhz = 3;
+  bool ramp_enabled = 4;
+  ChirpMode ramp_mode = 5;
+  bool fsk_enabled = 6;
+  bool psk_enabled = 7;
+  bool static_phase_enabled = 8;
+  int32 phase_millidegrees = 9;
+  uint32 r_counter = 10;
+  bool ref_doubler = 11;
+  bool ref_div2 = 12;
+  bool prescaler_8_9 = 13;
+  uint32 cp_current_code = 14;
+  bool csr = 15;
+  bool negative_bleed = 16;
+  uint32 negative_bleed_code = 17;
+  bool lol_disable = 18;
+  bool integer_n_mode = 19;
+  bool power_down = 20;
+  bool cp_three_state = 21;
+  bool counter_reset = 22;
+  bool parabolic = 23;
+  bool dual_ramp = 24;
+  bool fast_ramp = 25;
+  bool fsk_on_ramp = 26;
+  bool delayed_start = 27;
+  bool ramp_delay = 28;
+  bool triangular_delay = 29;
+  bool txdata_trigger_delay = 30;
+  bool external_step_clock = 31;
+  bool txdata_invert = 32;
+  bool muxout_ramp_complete = 33;
+  bool lock_detect_available = 34;
+}
+
 // Barracuda-only bring-up diagnostics.
 //
 // These used to be packed into switch-board fields (attenuation_db carried the
@@ -251,8 +300,8 @@ message BarracudaDiagnostics {
 
   // LMK R72 CH_ACT (RO, live): bit0 CH0_1, bit1 CH2_3, bit2 CH4, bit3 CH5,
   // bit4 CH6, bit5 CH7 — 1 = that channel's regulator/divider is powered and
-  // active. The Plan A expected value is 0x1D (CH0_1 + CH4 + CH5 + CH6). This
-  // is the LMK's own claim about each output channel, so a dead output pin
+  // active. The boot default is 0x01 (CH0_1 only), but the runtime clock-output
+  // command can change it. This is the LMK's own claim about each output channel, so a dead output pin
   // with its ACT bit set is a board-level fault, not a configuration fault.
   uint32 lmk_ch_act = 20;
 
@@ -285,6 +334,23 @@ message BarracudaDiagnostics {
   // Original two-sample encoding: slow bits 0-5, fast bits 8-13. A clean pass
   // is 0x2323. Kept separately so adf_link_probe remains simple for old tests.
   uint32 adf_link_probe_raw = 34;
+
+  BarracudaCapabilities capabilities = 35;
+  Adf4159State adf_state = 36;
+  // Live LMK OUT0/1 divider and derived output frequency. The coordinated
+  // setter keeps OUT1/4/5/6 on this same integer divide of the 2.5 GHz VCO.
+  uint32 lmk_reference_frequency_hz = 37;
+  uint32 lmk_reference_divider = 38;
+  // LMX setpoint and actual integer-N output after reference-clock retuning.
+  uint64 lmx_requested_frequency_hz = 39;
+  uint64 lmx_actual_frequency_hz = 40;
+  // DPLL/reference-selection detail used to distinguish a missing PRIREF from
+  // a valid reference that the DPLL has not selected or locked to.
+  uint32 lmk_refsel = 41;       // R167: selected reference (PRIREF = 1)
+  uint32 lmk_dpll_lock = 42;    // R168: frequency/phase lock state
+  uint32 lmk_ref_valid = 43;    // R411: PRIREF validation state
+  uint32 lmx_output_power_code = 44; // OUTA_PWR, R44[13:8], 0..63
+  bool lmx_output_power_manual = 45; // false = frequency-aware automatic table
 }
 
 message GetStatusResponse {
@@ -309,8 +375,8 @@ message GetStatusResponse {
   // CAL_ATT attenuator). Distinct from attenuation_db, which is the frontend
   // attenuator. Meaningless on variants without a cal attenuator.
   int32 cal_attenuation_db = 11;
-  // STRAPS reference-clock source: true = external, false = internal on-board
-  // oscillator (inverted vs cal_source_internal). Reserved to match rf-control.
+  // Barracuda LMK control source: true = external 10 MHz PRIREF/DPLL,
+  // false = internal 100 MHz XO/APLL-only (inverted vs cal_source_internal).
   bool clock_source_external = 12;
   // Barracuda: ADF4159 MUXOUT digital lock-detect (true = PLL locked).
   bool pll_locked = 13;
@@ -319,6 +385,14 @@ message GetStatusResponse {
   // Barracuda only; absent on every other variant. Host tools should gate on
   // board_type == "barracuda" rather than on presence.
   BarracudaDiagnostics barracuda = 15;
+  // RP2040/W55RP20 internal die-temperature sensor. This is not a substitute
+  // for a calibrated external board-temperature sensor.
+  float mcu_temperature_c = 16;
+  reserved 17 to 19; // used only by pre-release ADC diagnostics
+  // True when mcu_temperature_c is the first post-boot ADC sample cached by the
+  // firmware. Barracuda sets this because repeat conversions on its W55RP20
+  // internal temperature channel are not reliable.
+  bool mcu_temperature_is_boot_sample = 20;
 }
 
 message GetConfigRequest {}
@@ -367,14 +441,20 @@ message ErrorResponse {
   string detail = 2;  // short human-readable context; may be empty
 }
 
-// STRAPS reference-clock source select (SI53301 CLK_SEL). Reserved here to match
-// the rf-control host library, which defined these tags (30/31) ahead of the
-// firmware. No handler yet → a device replies ERROR_CODE_UNSUPPORTED until one
-// lands. `external` is the OPPOSITE sense to SetCalSource.internal.
+// Reference-clock source selection. On Barracuda, external selects LMK DPLL
+// mode disciplined by 10 MHz PRIREF; internal selects APLL-only free-run from
+// the onboard 100 MHz XO. The 20 MHz output plan is unchanged. `external` is
+// the OPPOSITE sense to SetCalSource.internal.
 message SetClockSourceRequest {
   bool external = 1;  // false = internal on-board oscillator, true = external clock
 }
-message SetClockSourceResponse {}
+message SetClockSourceResponse {
+  bool external = 1;               // live PLL1_MODE readback
+  bool reference_valid = 2;        // PRIREF validation state
+  bool reference_selected = 3;     // PRIREF is the DPLL input; `external` says whether DPLL controls VCO1
+  bool dpll_frequency_locked = 4;
+  bool dpll_phase_locked = 5;
+}
 
 // LMX2595 LO synthesizer output (Barracuda). 0 powers the synth down. Distinct
 // from SetPllFrequency, which targets the ADF4159/HMC733 VCO chain.
@@ -382,6 +462,14 @@ message SetLoFrequencyRequest {
   int32 frequency_mhz = 1;
 }
 message SetLoFrequencyResponse {}
+
+// Manual LMX2595 RFOUTA drive selection. The six-bit code is written directly
+// to OUTA_PWR and remains in force across later LO retunes. Reboot restores the
+// frequency-aware automatic setting (code 50 below 13.3 GHz).
+message SetLmxOutputPowerRequest {
+  uint32 power_code = 1; // 0..63
+}
+message SetLmxOutputPowerResponse {}
 
 // FMCW chirp control for the ADF4159 direct-modulation PLL (Barracuda). Programs
 // the ramp and (dis)arms it. With enabled=false the PLL holds a CW tone at
@@ -441,6 +529,33 @@ message DiscoveryResponse {
   string serial = 6;            // EEPROM serial if provisioned, else RP2 unique-id hex
   string name = 7;              // optional friendly name (empty if unset)
 }
+
+// Firmware update over Ethernet/USB. Ethernet updates use the dedicated
+// length-framed TCP service on port 5002 because data packets may span TCP
+// segments. The running app stages and verifies the image; a small immutable
+// bootloader applies it after reboot. Board identity is checked before erase.
+message FwUpdateBeginRequest {
+  uint32 size = 1;
+  uint32 crc32 = 2;
+  string board = 3;
+  string version = 4;
+}
+message FwUpdateBeginResponse {
+  uint32 max_chunk = 1;
+}
+message FwUpdateDataRequest {
+  uint32 offset = 1;
+  bytes data = 2;
+}
+message FwUpdateDataResponse {
+  uint32 next_offset = 1;
+}
+message FwUpdateCommitRequest {}
+message FwUpdateCommitResponse {
+  bool crc_ok = 1;
+}
+message FwUpdateAbortRequest {}
+message FwUpdateAbortResponse {}
 
 // ── GPIO self-test (diagnostic) ──────────────────────────────────────────────
 // Drives every board control pin LOW then HIGH, reading the pad input buffer
@@ -543,6 +658,68 @@ message SetAdfPowerRequest {
 }
 message SetAdfPowerResponse {}
 
+// LMK05318B reference output controls (Barracuda). FULL-STATE: every request
+// explicitly sets all four routed clocks. Changes are RAM-only and take effect
+// immediately; the boot defaults are restored on reset/power-cycle.
+message SetLmkClockOutputsRequest {
+  bool lmx_enabled   = 1; // OUT1 differential pair -> LMX2595 OSCin
+  bool adf_enabled   = 2; // OUT4 single-ended -> ADF4159 REFIN
+  bool sma_a_enabled = 3; // OUT5 -> front-panel CLKOUT_A
+  bool sma_b_enabled = 4; // OUT6 -> front-panel CLKOUT_B
+}
+message SetLmkClockOutputsResponse {
+  // Live LMK R72 CH_ACT readback after the write. Relevant bits are bit0
+  // OUT1 pair, bit2 OUT4, bit3 OUT5, and bit4 OUT6.
+  uint32 active_mask = 1;
+}
+
+// Coordinated Barracuda reference-clock change. The LMK uses an integer output
+// divider on a fixed 2.5 GHz VCO, so actual_frequency_hz can differ slightly
+// from the request. The firmware briefly mutes all routed LMK outputs, verifies
+// all four divider writes, restores their prior enable state, and recalculates
+// both downstream synthesizers for the actual clock. The ADF R counter is
+// selected automatically to keep its PFD <= 110 MHz. RAM-only; reboot restores
+// the 20 MHz (/125) boot plan. Only accepted while the ADF4159 is in plain CW.
+message SetLmkReferenceFrequencyRequest {
+  uint32 requested_frequency_hz = 1;
+}
+message SetLmkReferenceFrequencyResponse {
+  uint32 actual_frequency_hz = 1;
+  uint32 divider = 2;
+  uint64 lmx_requested_frequency_hz = 3;
+  uint64 lmx_actual_frequency_hz = 4;
+  uint32 adf_r_counter = 5;
+  uint32 adf_pfd_frequency_hz = 6;
+}
+
+// One attenuation state in a triggered, one-shot Barracuda sweep. The first
+// point must equal start_frequency_khz. Later values are latched when the ADF
+// ramp reaches their frequency; adjacent latch events need at least 3 us.
+message EqualizedSweepPoint {
+  uint32 frequency_khz = 1;
+  uint32 quarter_db = 2;       // HMC1119 code, 0..127 (0..31.75 dB)
+}
+
+message RunEqualizedSweepRequest {
+  uint32 start_frequency_khz = 1;
+  uint32 stop_frequency_khz = 2;
+  uint32 sweep_time_us = 3;
+  repeated EqualizedSweepPoint points = 4;
+  uint32 lo_frequency_mhz = 5; // 0 keeps the current LMX setting
+  bool restore_entry_state = 6; // return ADF + LMX + DSA to entry state afterward
+}
+
+message RunEqualizedSweepResponse {
+  uint32 applied_points = 1;
+  uint32 minimum_sweep_time_us = 2;
+  uint32 actual_sweep_time_us = 3;
+  bool locked_before = 4;
+  bool locked_after = 5;
+  bool restored = 6;
+  bool ramp_complete_observed = 7;
+  bool txdata_triggered = 8;
+}
+
 // Packet message with all request and response types
 message Packet {
   oneof message_id {
@@ -588,15 +765,22 @@ message Packet {
     // library's control.proto, so discovery takes the next free pair.
     DiscoveryRequest discovery_request = 38;
     DiscoveryResponse discovery_response = 39;
-    // GPIO self-test diagnostic. Tags 40-47 are reserved for the pending
-    // firmware-update (OTA) work on another branch, so this takes 48/49 to avoid
-    // a wire-tag collision when those branches merge.
+    // Firmware update owns the previously reserved tags 40-47.
+    FwUpdateBeginRequest fw_update_begin_request = 40;
+    FwUpdateBeginResponse fw_update_begin_response = 41;
+    FwUpdateDataRequest fw_update_data_request = 42;
+    FwUpdateDataResponse fw_update_data_response = 43;
+    FwUpdateCommitRequest fw_update_commit_request = 44;
+    FwUpdateCommitResponse fw_update_commit_response = 45;
+    FwUpdateAbortRequest fw_update_abort_request = 46;
+    FwUpdateAbortResponse fw_update_abort_response = 47;
+    // GPIO self-test diagnostic.
     GpioSelfTestRequest gpio_self_test_request = 48;
     GpioSelfTestResponse gpio_self_test_response = 49;
     // Barracuda LMX2595 arbitrary register readback diagnostic.
     Lmx2595RegisterReadRequest lmx2595_register_read_request = 50;
     Lmx2595RegisterReadResponse lmx2595_register_read_response = 51;
-    // Barracuda ADF4159 extended control. 40-47 stay reserved for OTA.
+    // Barracuda ADF4159 extended control.
     SetFskRequest set_fsk_request = 52;
     SetFskResponse set_fsk_response = 53;
     SetPhaseRequest set_phase_request = 54;
@@ -607,5 +791,13 @@ message Packet {
     SetAdfLoopConfigResponse set_adf_loop_config_response = 59;
     SetAdfPowerRequest set_adf_power_request = 60;
     SetAdfPowerResponse set_adf_power_response = 61;
+    SetLmkClockOutputsRequest set_lmk_clock_outputs_request = 62;
+    SetLmkClockOutputsResponse set_lmk_clock_outputs_response = 63;
+    SetLmkReferenceFrequencyRequest set_lmk_reference_frequency_request = 64;
+    SetLmkReferenceFrequencyResponse set_lmk_reference_frequency_response = 65;
+    RunEqualizedSweepRequest run_equalized_sweep_request = 66;
+    RunEqualizedSweepResponse run_equalized_sweep_response = 67;
+    SetLmxOutputPowerRequest set_lmx_output_power_request = 68;
+    SetLmxOutputPowerResponse set_lmx_output_power_response = 69;
   }
 }

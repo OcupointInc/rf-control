@@ -258,17 +258,14 @@ func (c *Client) SetCalSource(internal bool) error {
 	return nil
 }
 
-// SetClockSource selects the STRAPS reference-clock source (SI53301 CLK_SEL):
-// internal = the on-board oscillator, external = an external reference. Boards
-// without a switchable clock accept the request but it's a no-op.
+// SetClockSource selects a board's switchable reference-clock source using the
+// original library argument sense: internal=true selects the on-board source.
+// Barracuda callers that need live reference/lock detail should use
+// SetBarracudaClockSource instead.
 //
 // This method's argument keeps the library's original "internal" sense; the
 // wire field is SetClockSourceRequest.external (the OPPOSITE sense), so the
 // value is inverted here. Callers and CLI semantics are unchanged.
-//
-// NOTE: the firmware reserves this request's Packet tags but does not handle it
-// yet (see control.proto); until a handler lands a device replies with a
-// *DeviceError of code UNSUPPORTED rather than switching the clock.
 //
 // The wire field carries `external`, the opposite sense to this argument and to
 // SetCalSource — see the POLARITY note in control.proto. Negate here so callers

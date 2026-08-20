@@ -1,7 +1,7 @@
 # rf-control
 
 Single-binary CLI for configuring Ocupoint Ethernet-controlled RF
-frontends (Black Canyon, Straps, Whalepod). Talks to the device over
+frontends (Barracuda, Black Canyon, Straps, Whalepod). Talks to the device over
 either TCP (default port 5000) or the USB control channel on the
 second CDC interface — useful when the network side isn't reachable
 yet (fresh board, wrong static IP, no DHCP).
@@ -15,9 +15,9 @@ own Go program instead? See
 
 ## Download
 
-1. Open the
-   **[latest release](https://github.com/OcupointInc/rf-control/releases/latest)**
-   page.
+1. Open the **[current tested build](https://github.com/OcupointInc/rf-control/releases/tag/latest)**
+   page. This rolling prerelease is rebuilt from `main`; customer shipments
+   should use a numbered release made from the same tested commit.
 2. Under **Assets**, click the file matching your platform:
 
    | Platform               | File                            |
@@ -69,10 +69,9 @@ own Go program instead? See
 rf-control list
 ```
 
-This enumerates USB-CDC serial ports that look like the firmware
-(VID:PID `2E8A:000A`) and probes each one for a control-protocol
-response. The path it prints is what you'd pass to `--usb`. If `--ip`
-is supplied, the TCP address is also probed.
+This discovers Barracuda units over Ethernet and enumerates USB-CDC serial
+ports that look like the firmware (VID:PID `2E8A:000A`). The printed address or
+device path is what you pass to `--ip` or `--usb`.
 
 ### Read current configuration
 
@@ -116,52 +115,63 @@ The schema:
 }
 ```
 
-### RF control
+### Barracuda customer control
+
+For normal use there are only two RF commands. Both fix the LMX2595 LO at
+9600 MHz, wake it from the firmware's quiet power-on state, safely mute the DSA
+while reconfiguring, and then apply the requested attenuation.
+
+CW at 10 GHz using the internal clock:
 
 ```bash
-rf-control status                 # live RF status (channels, atten, LO, switches)
-rf-control set-channels on        # enable/disable all RF channels
-rf-control set-att 10             # frontend attenuation in dB
-rf-control set-cal-att 30         # calibration-path attenuation in dB
-rf-control set-cal on             # enter/leave calibration mode (CAL_SW)
-rf-control set-cal-source internal  # whalepod cal source (CAL_SEL): internal|external
-rf-control set-clock internal     # STRAPS reference clock (SI53301 CLK_SEL): internal|external
-rf-control set-pll 3500            # tune the STRAPS LMX2595 LO, in MHz
-rf-control set-band 1800-2700     # STRAPS band preset: switches + LO in one shot
-rf-control set-switch-channel 3   # SP8T RF-switch board: route channel 3 (or "off")
-rf-control gpio-selftest          # drive every control pin both ways, read back (alias: selftest)
+rf-control --ip 192.168.1.253 cw --frequency 10000
 ```
 
-`set-switch-channel` drives the PE42582 SP8T RF-switch board (`board_type:
-rf_switch`), routing one of the eight channels to the common port; `off`
-isolates all eight. That board has no attenuator, PLL, or calibration path — its
-firmware stubs those out — so `status` reports only the board type and the
-selected channel, and the other `set-*` commands are no-ops on it.
+Continuous 9.6–11.1 GHz sweep over 10 seconds using an external 10 MHz
+reference:
 
-On the Whalepod the internal noise-source amplifier only turns on when
-calibration mode is active *and* the internal source is selected, i.e.
-`set-cal on` together with `set-cal-source internal`.
+```bash
+rf-control --ip 192.168.1.253 sweep \
+  --start 9600 --stop 11100 --time 10s --clock external
+```
 
-`set-pll` and `set-band` drive the STRAPS frontend's LMX2595 PLL: `set-pll`
-tunes the LO directly, while `set-band` applies a band preset that sets all
-three switch banks *and* tunes the LO to that band in one firmware call.
-`set-band` accepts a frequency span (`10-900`, `900-1800`, `1800-2700`,
-`2700-3600`, `3600-4500`), a canonical `RF_BAND_*` name, or an integer 0-4.
-Boards without a PLL accept both requests but perform no tuning.
+Set attenuation with `--attenuation`; values are 0–31.75 dB in 0.25 dB steps:
 
-`set-clock` selects the STRAPS reference-clock source (the SI53301 `CLK_SEL`
-line, on GP27 via a board mod): `internal` uses the on-board oscillator,
-`external` an external reference. **Firmware support is pending** — until the
-device firmware handles this request it replies `unsupported` (exit code 4), so
-the host side is in place ahead of the firmware handler. Set the clock before
-tuning the PLL, since it changes the LO's reference.
+```bash
+rf-control --ip 192.168.1.253 cw \
+  --frequency 10500 --attenuation 6.25 --clock internal
+```
+
+The calibrated nominal output is −25 dBm at 0 dB attenuation. Each customer
+command restores the calibrated synthesizer-power baseline before enabling RF.
+Each dB of attenuation then lowers the nominal level by one dB, so 6.25 dB
+requests approximately −31.25 dBm. The command prints the requested nominal
+level.
+
+`--clock internal` is the default. With `--clock external`, RF remains muted and
+the command fails if the external reference is not valid, selected, and locked.
+Use `rf-control --ip 192.168.1.253 status` to inspect the current clock, LO,
+waveform mode, attenuation, power estimate, lock state, and controller
+temperature.
+
+The lower-level `set-*`, diagnostic, and firmware-update commands remain
+available for engineering and service work through
+`rf-control engineering-help`; customers do not need them for CW or sweep
+operation. The normal `rf-control help` output shows only the customer surface.
+See the one-page [Barracuda customer guide](docs/barracuda/README.md) for the
+handoff instructions.
 
 ---
 
 ## All commands
 
 ```
-list                   Discover USB devices and probe TCP if --ip is set
+cw --frequency <MHz> [--attenuation <dB>] [--clock internal|external]
+                       Customer CW; LO fixed at 9600 MHz
+sweep --start <MHz> --stop <MHz> --time <duration>
+      [--attenuation <dB>] [--clock internal|external]
+                       Customer continuous sawtooth sweep; LO fixed at 9600 MHz
+list                   Discover Ethernet and USB devices
 get                    Print the current device configuration
 set-ip [flags]         Change --address, --gateway, --subnet, --hostname
 apply-json <file>      Apply a JSON network config file
@@ -175,8 +185,7 @@ set-cal <on|off>       Enter/leave calibration mode (CAL_SW)
 set-cal-source <internal|external>
                        Select the Whalepod calibration source (CAL_SEL)
 set-clock <internal|external>
-                       Select the STRAPS reference clock (SI53301 CLK_SEL)
-                       — firmware handler pending (replies unsupported for now)
+                       Select the board's internal or external reference
 set-pll <MHz>          Tune the STRAPS LMX2595 LO
 set-band <band>        Apply a STRAPS band preset (switches + LO)
 set-switch-channel <1-8|off>
@@ -194,14 +203,17 @@ set-phase <off|psk|static> [degrees]
 set-adf-ref [flags]    ADF4159 reference path (R counter, doubler, CP current)
 set-adf-loop [flags]   ADF4159 loop quality (CSR, bleed, integer-N) — full state
 set-adf-power [flags]  ADF4159 power-down / CP three-state / counter reset — full state
+image-info <image.bin> Inspect a Barracuda OTA application image
+flash [flags] <image.bin>
+                       Flash via Ethernet or USB and verify after reboot
 ```
 
-### Barracuda ADF4159 commands
+### Engineering: Barracuda ADF4159 commands
 
 ```bash
-rf-control set-chirp --start 11700 --dev 1500 --time 35 --mode sawtooth
+rf-control set-chirp --start 10000 --dev 1000 --time 35 --mode sawtooth
 rf-control set-chirp --off                    # hold CW at --start
-rf-control set-fsk --center 11700 --dev-khz 500
+rf-control set-fsk --center 10000 --dev-khz 500
 rf-control set-phase psk 90                   # +/-90 deg toggled from TXDATA
 rf-control set-adf-ref --r-counter 1 --cp-code 7 --prescaler 8/9
 rf-control set-adf-loop --negative-bleed --bleed-code 4
@@ -446,6 +458,41 @@ safe order), closes the transport, and prints a JSON result to stdout. Only
 `stdout` is JSON — diagnostics (auto-discovery notes, `-v` hex dumps) go to
 stderr, so parsing stdout is always clean.
 
+The Barracuda customer interface is available as one nested object. CW:
+
+```json
+{
+  "barracuda": {
+    "mode": "cw",
+    "frequency_mhz": 10000,
+    "attenuation_db": 0,
+    "clock": "internal"
+  }
+}
+```
+
+Continuous sweep:
+
+```json
+{
+  "barracuda": {
+    "mode": "sweep",
+    "start_mhz": 9600,
+    "stop_mhz": 11100,
+    "sweep_time": "10s",
+    "attenuation_db": 0,
+    "clock": "external"
+  }
+}
+```
+
+Pass either document to `rf-control --ip ADDRESS apply`. The same range,
+quarter-dB, fixed-LO, clock-lock, and safe-muting rules as `cw` and `sweep`
+apply. A `network` block may accompany `barracuda`; legacy RF fields may not.
+
+The older shared-board fields remain available for Whalepod, STRAPS, and RF
+switch automation:
+
 ```bash
 echo '{
   "attenuation_db": 10,
@@ -499,13 +546,14 @@ All fields are optional; only the ones you include are touched.
 | `channels_enabled`    | bool          | Enable/disable all RF channels                                 |
 | `cal_enabled`         | bool          | Enter/leave calibration mode (CAL_SW)                          |
 | `cal_source_internal` | bool          | Whalepod CAL_SEL: `true` = internal noise source, `false` = ext |
-| `clock_source_internal` | bool        | STRAPS CLK_SEL: `true` = internal oscillator, `false` = external ref (firmware handler pending) |
+| `clock_source_internal` | bool        | Legacy switchable clock: `true` = internal, `false` = external |
 | `rf_band`             | string or int | STRAPS band preset (sets switches + LO): a span like `"1800-2700"`, an `RF_BAND_*` name, or int 0–4 |
 | `rf_switch`           | string or int | `"4ghz"`/`"2ghz"`, a canonical enum name, or the raw int       |
 | `mixer_switch`        | string or int | `"mixer"`/`"bypass"`                                            |
 | `if_switch`           | string or int | `"900mhz"`/`"1_2ghz"`                                           |
 | `pll_frequency_mhz`   | int 0–15000   | STRAPS LMX2595 LO frequency in MHz                             |
 | `rf_switch_channel`   | int 0–8       | SP8T RF-switch board; 0 = all off                              |
+| `barracuda`           | object        | Simplified `cw` or `sweep` customer plan described above       |
 | `network`             | object        | `static_ip`, `static_gateway`, `static_subnet`, `hostname`     |
 
 Notes:
@@ -548,24 +596,37 @@ if err != nil {
 }
 fmt.Println(cfg.SerialNumber)
 
-if err := c.SetAttenuation(10); err != nil {
+result, err := c.ConfigureBarracudaCW(client.BarracudaCWConfig{
+    FrequencyMHz:  10000,
+    AttenuationDB: 0,
+    ExternalClock: false,
+})
+if err != nil {
     log.Fatal(err)
 }
+fmt.Printf("nominal output: %.2f dBm\n", result.NominalOutputDBm)
 ```
 
-`Client` has one method per request the firmware supports today —
+`ConfigureBarracudaCW` and `ConfigureBarracudaSweep` are the supported
+customer-facing Go API. They enforce the 9500–11500 MHz operating range, keep
+the LO at 9600 MHz, mute during reconfiguration, validate the selected clock,
+and apply the output attenuation. Lower-level methods remain available for
+engineering tools.
+
+`Client` also has one method per request the firmware supports today —
 `GetConfig`, `SaveConfig`, `GetStatus`, `SetAttenuation`, `SetCalAttenuation`,
 `SetChannelsEnabled`, `SetCalEnabled`, `SetCalSource`, `SetClockSource`,
 `SetSwitches`, `SetPllFrequency`, `SetRfBand`, `SetRfSwitchChannel`, and for
 the Barracuda module `SetLoFrequency`, `SetDsaAttenuation`, `SetChirp` /
 `SetChirpEx`, `SetFsk`, `SetPhase`, `SetAdfRefConfig`, `SetAdfLoopConfig`,
-`SetAdfPower` — each
+`SetAdfPower`, `SetLMXOutputPower`, `SetLMKClockOutputs`,
+`SetLMKReferenceFrequency`, `ReadLMX2595Registers`, and `RunEqualizedSweep` — each
 returning the typed protobuf response (or nothing but an error, for the
 setters) from
 `github.com/OcupointInc/rf-control/controlpb`. USB discovery helpers
 (`client.ListCandidatePorts`, `client.IsControlPort`,
-`client.DiscoverUSBPort`) are exported too, so you can replicate the CLI's
-`list`/auto-discovery behavior in your own code.
+`client.DiscoverUSBPort`) and `client.DiscoverEthernet` are exported too, so
+you can replicate the CLI's discovery behavior in your own code.
 
 `SetChirp` keeps the classic five-argument signature (start, deviation, ramp
 time, mode, enabled) and leaves every extended ADF4159 waveform option at zero.
@@ -598,7 +659,11 @@ comment — the device's control port only has two listening sockets, so
 back-to-back fresh connections can occasionally race the accept path). You
 don't need to add your own retry loop on top.
 
-See [`client/client.go`](client/client.go) and
+The package also exposes `LoadFirmwareImage`, `UpdateFirmwareTCP`, and
+`UpdateFirmwareUSB` for validated Barracuda OTA updates.
+
+See [`client/client.go`](client/client.go),
+[`client/barracuda_customer.go`](client/barracuda_customer.go), and
 [`client/whalepod.go`](client/whalepod.go) for the full API (`go doc
 github.com/OcupointInc/rf-control/client` once fetched) and
 [`examples/whalepod`](examples/whalepod) for a complete, runnable program
@@ -608,6 +673,7 @@ that walks through a calibration measurement on a Whalepod board.
 
 ## Hardware setup guides
 
+- [Barracuda customer control](docs/barracuda/README.md)
 - [Whalepod eval board](docs/whalepod/README.md)
 - [Reflashing the eval board firmware](docs/firmware/README.md) —
   shared procedure across all devices; `.uf2` files live in
@@ -631,9 +697,9 @@ GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -o rf-control-mac .
 GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -o rf-control-pi .
 ```
 
-Releases are produced by `.github/workflows/release.yml`, which fires
-on `v*` tag pushes and uploads a binary per platform to the GitHub
-Release page.
+Releases are produced by `.github/workflows/release.yml`. Every push to `main`
+refreshes the rolling `latest` prerelease after tests pass; `v*` tags publish a
+numbered release with binaries for every supported platform.
 
 ---
 

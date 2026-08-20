@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/OcupointInc/rf-control/client"
 	pb "github.com/OcupointInc/rf-control/controlpb"
@@ -300,6 +301,19 @@ func cmdList(args []string) error {
 		}
 	}
 
+	fmt.Println("\nEthernet devices (UDP discovery):")
+	devices, discoveryErr := client.DiscoverEthernet(750 * time.Millisecond)
+	if discoveryErr != nil {
+		fmt.Printf("  (discovery error: %v)\n", discoveryErr)
+	} else if len(devices) == 0 {
+		fmt.Println("  (none found)")
+	} else {
+		for _, device := range devices {
+			fmt.Printf("  %-15s  board=%-20s firmware=%-10s serial=%s port=%d\n",
+				ipString(device.Ip), device.Board, device.FirmwareVersion, device.Serial, device.ControlPort)
+		}
+	}
+
 	// TCP probe only when the user explicitly asked for one (--ip set).
 	if common.ip != "" {
 		fmt.Printf("\nTCP probe at %s:%d\n", common.ip, common.port)
@@ -365,6 +379,10 @@ func cmdStatus(args []string) error {
 		}
 		return nil
 	}
+	if s.BoardType == "barracuda" {
+		printBarracudaCustomerStatus(s)
+		return nil
+	}
 
 	fmt.Printf("Channels enabled    : %v\n", s.ChannelsEnabled)
 	fmt.Printf("Calibration enabled : %v\n", s.CalibrationEnabled)
@@ -374,13 +392,6 @@ func cmdStatus(args []string) error {
 		fmt.Printf("RF switch           : %s\n", s.RfSwitch)
 		fmt.Printf("Mixer switch        : %s\n", s.MixerSwitch)
 		fmt.Printf("IF switch           : %s\n", s.IfSwitch)
-	}
-	// pll_locked / ref_locked are only populated by Barracuda firmware (ADF4159
-	// lock-detect and LMK05318B reference lock); other boards leave them zero, so
-	// only show them where they're meaningful.
-	if s.BoardType == "barracuda" {
-		fmt.Printf("PLL locked          : %v\n", s.PllLocked)
-		fmt.Printf("Ref locked          : %v\n", s.RefLocked)
 	}
 	return nil
 }
@@ -894,7 +905,7 @@ func cmdSetClockSource(args []string) error {
 	_ = fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		return usagef("usage: set-clock <internal|external>  (STRAPS reference clock, SI53301 CLK_SEL)")
+		return usagef("usage: set-clock <internal|external>")
 	}
 	var internal bool
 	switch strings.ToLower(fs.Arg(0)) {
@@ -979,8 +990,8 @@ func cmdSetChirp(args []string) error {
 	fs := flag.NewFlagSet("set-chirp", flag.ExitOnError)
 	common := &commonFlags{}
 	addCommonFlags(fs, common)
-	start := fs.Int("start", 11700, "ramp start frequency in MHz (VCO output)")
-	dev := fs.Int("dev", 1500, "chirp deviation / bandwidth in MHz")
+	start := fs.Int("start", 10000, "ramp start frequency in MHz (VCO output)")
+	dev := fs.Int("dev", 1000, "chirp deviation / bandwidth in MHz")
 	timeUs := fs.Int("time", 35, "ramp time in microseconds")
 	mode := fs.String("mode", "sawtooth", "ramp shape: sawtooth|triangle")
 	triggered := fs.Bool("triggered", false, "one ramp per TXDATA trigger (else free-running)")
@@ -1151,7 +1162,7 @@ func cmdSetFsk(args []string) error {
 	fs := flag.NewFlagSet("set-fsk", flag.ExitOnError)
 	common := &commonFlags{}
 	addCommonFlags(fs, common)
-	center := fs.Int("center", 11700, "FSK center frequency in MHz")
+	center := fs.Int("center", 10000, "FSK center frequency in MHz")
 	devKHz := fs.Int("dev-khz", 0, "FSK deviation in kHz (the hop is +/- this around --center)")
 	off := fs.Bool("off", false, "disable FSK (hold CW at --center)")
 	_ = fs.Parse(args)
@@ -1576,19 +1587,32 @@ func cmdApplyJSON(args []string) error {
 // zero/false" — the whole point, since channels_enabled=false must differ from
 // channels_enabled absent.
 type batchConfig struct {
-	AttenuationDb       *int          `json:"attenuation_db"`
-	CalAttenuationDb    *int          `json:"cal_attenuation_db"`
-	ChannelsEnabled     *bool         `json:"channels_enabled"`
-	CalEnabled          *bool         `json:"cal_enabled"`
-	CalSourceInternal   *bool         `json:"cal_source_internal"`
-	ClockSourceInternal *bool         `json:"clock_source_internal"`
-	RfBand              *enumField    `json:"rf_band"`
-	RfSwitch            *enumField    `json:"rf_switch"`
-	MixerSwitch         *enumField    `json:"mixer_switch"`
-	IfSwitch            *enumField    `json:"if_switch"`
-	PllFrequencyMhz     *int          `json:"pll_frequency_mhz"`
-	RfSwitchChannel     *int          `json:"rf_switch_channel"`
-	Network             *networkBatch `json:"network"`
+	AttenuationDb       *int            `json:"attenuation_db"`
+	CalAttenuationDb    *int            `json:"cal_attenuation_db"`
+	ChannelsEnabled     *bool           `json:"channels_enabled"`
+	CalEnabled          *bool           `json:"cal_enabled"`
+	CalSourceInternal   *bool           `json:"cal_source_internal"`
+	ClockSourceInternal *bool           `json:"clock_source_internal"`
+	RfBand              *enumField      `json:"rf_band"`
+	RfSwitch            *enumField      `json:"rf_switch"`
+	MixerSwitch         *enumField      `json:"mixer_switch"`
+	IfSwitch            *enumField      `json:"if_switch"`
+	PllFrequencyMhz     *int            `json:"pll_frequency_mhz"`
+	RfSwitchChannel     *int            `json:"rf_switch_channel"`
+	Barracuda           *barracudaBatch `json:"barracuda"`
+	Network             *networkBatch   `json:"network"`
+}
+
+// barracudaBatch mirrors the simplified customer cw/sweep interface for JSON
+// automation. It intentionally exposes no engineering-only waveform fields.
+type barracudaBatch struct {
+	Mode          string  `json:"mode"`
+	FrequencyMHz  *int    `json:"frequency_mhz"`
+	StartMHz      *int    `json:"start_mhz"`
+	StopMHz       *int    `json:"stop_mhz"`
+	SweepTime     string  `json:"sweep_time"`
+	AttenuationDB float64 `json:"attenuation_db"`
+	Clock         string  `json:"clock"`
 }
 
 // networkBatch mirrors the SaveConfigRequest network fields. Omitted fields are
@@ -1696,18 +1720,23 @@ type applyResult struct {
 // are rendered as their canonical names so the output round-trips back through
 // `apply` as input.
 type statusJSON struct {
-	BoardType           string `json:"board_type,omitempty"`
-	ChannelsEnabled     bool   `json:"channels_enabled"`
-	CalibrationEnabled  bool   `json:"calibration_enabled"`
-	CalSourceInternal   bool   `json:"cal_source_internal"`
-	ClockSourceInternal bool   `json:"clock_source_internal"`
-	AttenuationDb       int32  `json:"attenuation_db"`
-	CalAttenuationDb    int32  `json:"cal_attenuation_db"`
-	LoFrequencyMhz      int32  `json:"lo_frequency_mhz"`
-	RfSwitch            string `json:"rf_switch"`
-	MixerSwitch         string `json:"mixer_switch"`
-	IfSwitch            string `json:"if_switch"`
-	RfSwitchChannel     int32  `json:"rf_switch_channel"`
+	BoardType                string                   `json:"board_type,omitempty"`
+	ChannelsEnabled          bool                     `json:"channels_enabled"`
+	CalibrationEnabled       bool                     `json:"calibration_enabled"`
+	CalSourceInternal        bool                     `json:"cal_source_internal"`
+	ClockSourceInternal      bool                     `json:"clock_source_internal"`
+	AttenuationDb            int32                    `json:"attenuation_db"`
+	CalAttenuationDb         int32                    `json:"cal_attenuation_db"`
+	LoFrequencyMhz           int32                    `json:"lo_frequency_mhz"`
+	RfSwitch                 string                   `json:"rf_switch"`
+	MixerSwitch              string                   `json:"mixer_switch"`
+	IfSwitch                 string                   `json:"if_switch"`
+	RfSwitchChannel          int32                    `json:"rf_switch_channel"`
+	PLLLocked                bool                     `json:"pll_locked,omitempty"`
+	RefLocked                bool                     `json:"ref_locked,omitempty"`
+	McuTemperatureC          float32                  `json:"mcu_temperature_c,omitempty"`
+	McuTemperatureBootSample bool                     `json:"mcu_temperature_is_boot_sample,omitempty"`
+	Barracuda                *pb.BarracudaDiagnostics `json:"barracuda,omitempty"`
 }
 
 func statusToJSON(s *pb.GetStatusResponse) *statusJSON {
@@ -1718,14 +1747,19 @@ func statusToJSON(s *pb.GetStatusResponse) *statusJSON {
 		CalSourceInternal:  s.CalSourceInternal,
 		// The wire field is clock_source_external (opposite sense); the JSON
 		// stays clock_source_internal for backward compatibility, so invert.
-		ClockSourceInternal: !s.ClockSourceExternal,
-		AttenuationDb:       s.AttenuationDb,
-		CalAttenuationDb:    s.CalAttenuationDb,
-		LoFrequencyMhz:      s.LoFrequencyMhz,
-		RfSwitch:            s.RfSwitch.String(),
-		MixerSwitch:         s.MixerSwitch.String(),
-		IfSwitch:            s.IfSwitch.String(),
-		RfSwitchChannel:     s.RfSwitchChannel,
+		ClockSourceInternal:      !s.ClockSourceExternal,
+		AttenuationDb:            s.AttenuationDb,
+		CalAttenuationDb:         s.CalAttenuationDb,
+		LoFrequencyMhz:           s.LoFrequencyMhz,
+		RfSwitch:                 s.RfSwitch.String(),
+		MixerSwitch:              s.MixerSwitch.String(),
+		IfSwitch:                 s.IfSwitch.String(),
+		RfSwitchChannel:          s.RfSwitchChannel,
+		PLLLocked:                s.PllLocked,
+		RefLocked:                s.RefLocked,
+		McuTemperatureC:          s.McuTemperatureC,
+		McuTemperatureBootSample: s.McuTemperatureIsBootSample,
+		Barracuda:                s.Barracuda,
 	}
 }
 
@@ -1785,6 +1819,17 @@ func cmdApply(args []string) error {
 // never leaves the hardware half-configured. Fields that need live device state
 // (the switch backfill) are still handled in applyBatch.
 func (cfg *batchConfig) validate() error {
+	if cfg.Barracuda != nil {
+		if cfg.AttenuationDb != nil || cfg.CalAttenuationDb != nil || cfg.ChannelsEnabled != nil ||
+			cfg.CalEnabled != nil || cfg.CalSourceInternal != nil || cfg.ClockSourceInternal != nil ||
+			cfg.RfBand != nil || cfg.RfSwitch != nil || cfg.MixerSwitch != nil || cfg.IfSwitch != nil ||
+			cfg.PllFrequencyMhz != nil || cfg.RfSwitchChannel != nil {
+			return usagef("barracuda cannot be combined with legacy RF fields; network may be combined with it")
+		}
+		if _, _, err := cfg.Barracuda.customerConfigs(); err != nil {
+			return usagef("barracuda: %v", err)
+		}
+	}
 	resolves := []struct {
 		field   string
 		f       *enumField
@@ -1867,6 +1912,25 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 	// the JSON result still reports the same field + message.
 	failInput := func(field string, err error) (*applyResult, error) {
 		return fail(field, &usageError{err: err})
+	}
+
+	if cfg.Barracuda != nil {
+		cw, sweep, err := cfg.Barracuda.customerConfigs()
+		if err != nil {
+			return failInput("barracuda", err)
+		}
+		if cw != nil {
+			if _, err := c.ConfigureBarracudaCW(*cw); err != nil {
+				return fail("barracuda", err)
+			}
+			res.Applied = append(res.Applied, fmt.Sprintf("barracuda.cw=%dMHz", cw.FrequencyMHz))
+		} else {
+			if _, err := c.ConfigureBarracudaSweep(*sweep); err != nil {
+				return fail("barracuda", err)
+			}
+			res.Applied = append(res.Applied,
+				fmt.Sprintf("barracuda.sweep=%d-%dMHz/%s", sweep.StartMHz, sweep.StopMHz, sweep.SweepTime))
+		}
 	}
 
 	// Clock source before anything PLL-related: it selects the LMX2595 reference,
@@ -2056,16 +2120,53 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 // ----- entry point -----------------------------------------------------------
 
 func usage() {
+	fmt.Fprint(os.Stderr, `Ocupoint Barracuda RF control
+
+Usage:
+  rf-control [--ip ADDRESS | --usb DEVICE] <command> [options]
+
+Customer commands:
+  cw --frequency MHz [--attenuation dB] [--clock internal|external]
+                         Generate a CW tone. LO is fixed at 9600 MHz.
+  sweep --start MHz --stop MHz --time DURATION
+        [--attenuation dB] [--clock internal|external]
+                         Generate a continuous sawtooth sweep. LO is fixed at
+                         9600 MHz. Example duration: 10s, 20ms, or 35us.
+  status                 Show current RF, clock, attenuation, lock, and temperature.
+  list                   Discover Ethernet and USB devices.
+  get                    Show device identity and network configuration.
+  set-ip [flags]         Change network configuration.
+  version                Show the rf-control version.
+  help                   Show this help.
+
+Defaults and limits:
+  Clock                  internal
+  Attenuation            0 dB (nominal output -25 dBm)
+  Frequency range        9500..11500 MHz
+  Attenuation range      0..31.75 dB in 0.25 dB steps
+
+Run 'rf-control cw --help' or 'rf-control sweep --help' for examples.
+Run 'rf-control engineering-help' for service, diagnostics, firmware update,
+and lower-level board commands.
+`)
+}
+
+func engineeringUsage() {
 	fmt.Fprint(os.Stderr, `WIZnet Pico RF control tool
 
 Usage:
   rf-control [--usb /dev/ttyACM1 | --ip 172.16.22.30 --port 5000] <command> [args]
 
 Commands:
-  list                   Discover USB devices matching the firmware
-                         (VID:PID 2E8A:000A) and probe the configured
-                         TCP address. Useful for finding the right
-                         /dev/tty.usbmodemXXX.
+  cw --frequency MHz [--attenuation dB] [--clock internal|external]
+                         Customer CW operation. The LO is fixed at 9600 MHz.
+                         0 dB attenuation is nominally -25 dBm.
+  sweep --start MHz --stop MHz --time DURATION
+        [--attenuation dB] [--clock internal|external]
+                         Customer continuous sawtooth sweep. DURATION includes
+                         units, for example 10s, 20ms, or 35us. The LO is fixed
+                         at 9600 MHz; 0 dB attenuation is nominally -25 dBm.
+  list                   Discover Ethernet and USB devices matching firmware.
   get                    Print the current device configuration.
   set-ip [flags]         Change one or more of: --address, --gateway,
                          --subnet, --hostname. Preserves MAC + serial.
@@ -2076,6 +2177,8 @@ Commands:
                          transport once, apply it all, then print a JSON
                          result to stdout. This is the command to call from
                          Python/scripts. Fields (all optional):
+                           barracuda{} customer plan (mode cw/sweep, frequencies,
+                           sweep_time, attenuation_db, clock),
                            attenuation_db, cal_attenuation_db,
                            channels_enabled, cal_enabled, cal_source_internal,
                            clock_source_internal, rf_band, rf_switch,
@@ -2100,8 +2203,7 @@ Commands:
                          The internal noise-source amp turns on only in cal
                          mode with the internal source selected.
   set-clock <internal|external>
-                         Select the STRAPS reference clock (SI53301 CLK_SEL):
-                         internal on-board oscillator vs external reference.
+                         Select the board's internal or external reference.
   set-pll <MHz>          Tune the STRAPS LMX2595 LO (e.g. 3500). On Barracuda
                          this tunes the ADF4159 VCO CW tone.
   set-band <band>        Apply a STRAPS band preset (switches + LO in one shot).
@@ -2111,7 +2213,7 @@ Commands:
   set-lo <MHz>           Tune the LMX2595 LO (0 powers it down).
   set-dsa <dB>           HMC1119 attenuation, 0-31.75 dB in 0.25 dB steps.
   set-chirp [flags]      Program/arm the ADF4159 FMCW ramp. Flags:
-                           --start MHz (11700)  --dev MHz (1500)  --time us (35)
+                           --start MHz (10000)  --dev MHz (1000)  --time us (35)
                            --mode sawtooth|triangle  --triggered  --off
                          Extended waveform options (all default off — omit them
                          all for the classic chirp):
@@ -2153,6 +2255,10 @@ Commands:
                          (The ADF4159 flags above also accept the firmware
                          control_tool's shorter spellings: --r, --cp, --doubler,
                          --div2, --bleed, --cp-tristate.)
+  image-info <image.bin> Inspect a Barracuda OTA image without a device.
+  flash [flags] <image.bin>
+                         Flash over Ethernet port 5002 or framed USB, verify the
+                         image and CRC, reboot, and confirm firmware version.
   set-switch-channel <1-8|off>
                          Route the SP8T RF-switch board's common port to one of
                          the eight channels, or "off" to isolate all of them.
@@ -2236,6 +2342,10 @@ func main() {
 	switch cmd {
 	case "list":
 		err = cmdList(rest)
+	case "cw":
+		err = cmdCustomerCW(rest)
+	case "sweep":
+		err = cmdCustomerSweep(rest)
 	case "get":
 		err = cmdGet(rest)
 	case "set-ip":
@@ -2282,8 +2392,15 @@ func main() {
 		err = cmdSetBand(rest)
 	case "set-switch-channel":
 		err = cmdSetSwitchChannel(rest)
+	case "image-info":
+		err = cmdImageInfo(rest)
+	case "flash":
+		err = cmdFlash(rest)
 	case "version":
 		fmt.Println(version)
+		return
+	case "engineering-help":
+		engineeringUsage()
 		return
 	case "help", "-h", "--help":
 		usage()
