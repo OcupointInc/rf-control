@@ -34,10 +34,6 @@ export function PreviewNetwork(arg1) {
   return window['go']['main']['App']['PreviewNetwork'](arg1);
 }
 
-export function ReadLMXRegisters(arg1) {
-  return window['go']['main']['App']['ReadLMXRegisters'](arg1);
-}
-
 export function SaveTuningProfile(arg1) {
   return window['go']['main']['App']['SaveTuningProfile'](arg1);
 }

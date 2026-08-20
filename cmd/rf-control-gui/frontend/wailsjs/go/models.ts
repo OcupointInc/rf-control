@@ -272,50 +272,6 @@ export namespace gui {
 		}
 	}
 
-	export class LMXRegister {
-	    address: number;
-	    value: number;
-
-	    static createFrom(source: any = {}) {
-	        return new LMXRegister(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.address = source["address"];
-	        this.value = source["value"];
-	    }
-	}
-	export class LMXRegisterReadResult {
-	    registers: LMXRegister[];
-
-	    static createFrom(source: any = {}) {
-	        return new LMXRegisterReadResult(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.registers = this.convertValues(source["registers"], LMXRegister);
-	    }
-
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 	export class NetworkPlan {
 	    ipAddress: string;
 	    gateway: string;

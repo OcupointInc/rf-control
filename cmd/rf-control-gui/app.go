@@ -56,10 +56,6 @@ func (a *App) SetRFEnabled(enabled bool) (controlgui.DeviceSnapshot, error) {
 	return a.service.SetRFEnabled(enabled)
 }
 
-func (a *App) ReadLMXRegisters(addresses []uint32) (controlgui.LMXRegisterReadResult, error) {
-	return a.service.ReadLMXRegisters(addresses)
-}
-
 func (a *App) SaveTuningProfile(profile controlgui.TuningProfile) (string, error) {
 	if err := controlgui.ValidateTuningProfile(profile); err != nil {
 		return "", err

@@ -91,19 +91,15 @@ driver for that interface.
    customer-plan LO plus calibrated LMX output power.
 5. Use **Network** to view or assign the device IP. The GUI previews the
    automatically derived `/24` subnet and `.1` gateway before applying it.
-6. Use **Registers** to read selected LMX2595 addresses or the complete
-   R0–R112 map without changing the hardware. Results can be copied in the
-   CLI's `R0=0x0000` text format or as JSON; the page also provides a copyable
-   `rf-control read-lmx` command for the current USB or Ethernet connection.
-7. Use **Export** on RF Control to save every setting currently shown in the
+6. Use **Export** on RF Control to save every setting currently shown in the
    form as a CLI-compatible tuning profile. **Load** restores it into the form
    without touching the hardware; press **Apply** when ready. Profiles contain
    mode, frequency or sweep range/time, attenuation, clock source, and RF
    ON/OFF state.
-8. The application version is shown at the bottom of the sidebar. It matches
+7. The application version is shown at the bottom of the sidebar. It matches
    the value printed by `rf-control version`: a release tag for stable builds
    or `latest-<commit>` for rolling builds.
-9. Allow the device to reboot and reconnect at its Ethernet address.
+8. Allow the device to reboot and reconnect at its Ethernet address.
 
 The GUI displays only customer RF frequencies for Barracuda. LO, mixer, and
 synthesizer settings remain internal. A failed Barracuda configuration leaves

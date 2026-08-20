@@ -18,8 +18,6 @@ export function LoadTuningProfile():Promise<gui.TuningProfile>;
 
 export function PreviewNetwork(arg1:string):Promise<gui.NetworkPlan>;
 
-export function ReadLMXRegisters(arg1:Array<number>):Promise<gui.LMXRegisterReadResult>;
-
 export function SaveTuningProfile(arg1:gui.TuningProfile):Promise<string>;
 
 export function SetIPAddress(arg1:string):Promise<gui.NetworkChangeResult>;

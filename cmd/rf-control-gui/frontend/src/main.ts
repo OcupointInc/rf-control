@@ -9,13 +9,11 @@ import {
   GetStatus,
   LoadTuningProfile,
   PreviewNetwork,
-  ReadLMXRegisters,
   SaveTuningProfile,
   SetIPAddress,
   Version,
 } from '../wailsjs/go/main/App';
 import { gui as GoModels } from '../wailsjs/go/models';
-import { ClipboardSetText } from '../wailsjs/runtime/runtime';
 
 type Endpoint = { kind: 'usb' | 'ethernet'; address: string; port: number };
 type DiscoveredDevice = {
@@ -78,8 +76,6 @@ type Snapshot = {
   customerControl: boolean;
 };
 type NetworkPlan = { ipAddress: string; gateway: string; subnet: string };
-type LMXRegister = { address: number; value: number };
-type LMXRegisterReadResult = { registers: LMXRegister[] };
 type BarracudaTuningProfile = {
   mode: 'cw' | 'sweep';
   if_frequency_mhz?: number;
@@ -91,7 +87,7 @@ type BarracudaTuningProfile = {
   rf_enabled: boolean;
 };
 type TuningProfile = { barracuda: BarracudaTuningProfile };
-type Tab = 'control' | 'status' | 'registers' | 'network';
+type Tab = 'control' | 'status' | 'network';
 
 const scanTimeoutMs = 5000;
 const nominalMaximumOutputDbm = -25;
@@ -120,9 +116,6 @@ const state = {
   networkInput: '',
   networkPlan: null as NetworkPlan | null,
   networkError: '',
-  registerSpec: '0-15',
-  registerResult: null as LMXRegisterReadResult | null,
-  registerScope: '',
 };
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -235,45 +228,10 @@ function renderHeader(snapshot: Snapshot): string {
 
 function renderTabs(snapshot: Snapshot): string {
   const tabs: Array<[Tab, string]> = snapshot.customerControl
-    ? [['control', 'RF Control'], ['status', 'Status'], ['registers', 'Registers'], ['network', 'Network']]
+    ? [['control', 'RF Control'], ['status', 'Status'], ['network', 'Network']]
     : [['status', 'Status'], ['network', 'Network']];
   if (!snapshot.customerControl && state.tab === 'control') state.tab = 'status';
   return `<nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`).join('')}</nav>`;
-}
-
-const registerHex = (value: number): string => `0x${Math.trunc(value).toString(16).toUpperCase().padStart(4, '0')}`;
-
-function registerCLICommand(snapshot: Snapshot): string {
-  const transport = snapshot.endpoint.kind === 'usb'
-    ? `--usb ${snapshot.endpoint.address}`
-    : `--ip ${snapshot.endpoint.address}${snapshot.endpoint.port && snapshot.endpoint.port !== 5000 ? ` --port ${snapshot.endpoint.port}` : ''}`;
-  return `rf-control ${transport} read-lmx${state.registerScope ? ` ${state.registerScope}` : ''}`;
-}
-
-function registerText(): string {
-  return (state.registerResult?.registers || []).map((register) => `R${register.address}=${registerHex(register.value)}`).join('\n');
-}
-
-function renderRegisters(snapshot: Snapshot): string {
-  const registers = state.registerResult?.registers || [];
-  const cliCommand = registerCLICommand(snapshot);
-  return `
-    <section class="content registers-layout">
-      <div class="section-intro"><div><p class="eyebrow">Read-only engineering data</p><h2>LMX2595 registers</h2></div>${registers.length ? `<span class="connection-note">${registers.length} register${registers.length === 1 ? '' : 's'} read</span>` : ''}</div>
-      <div class="register-grid">
-        <article class="panel register-reader">
-          <h3>Read live register values</h3>
-          <p>This is a non-disruptive readback. It does not reconfigure the RF output.</p>
-          <div class="field"><label for="register-spec">Registers</label><input id="register-spec" value="${escapeHTML(state.registerSpec)}" placeholder="0-15, 44, R75"><small>Use R0–R112, comma-separated values, or ranges such as 44-46.</small></div>
-          <div class="register-actions"><button class="primary" id="read-registers" ${state.busy ? 'disabled' : ''}>Read selected</button><button class="secondary" id="read-all-registers" ${state.busy ? 'disabled' : ''}>Read all R0–R112</button></div>
-          <div class="cli-repeat"><span>Repeat from the CLI</span><code>${escapeHTML(cliCommand)}</code><button class="secondary" id="copy-cli-command">Copy command</button></div>
-        </article>
-        <article class="panel register-output">
-          <div class="register-output-head"><h3>Register snapshot</h3><div><button class="secondary" id="copy-register-text" ${!registers.length ? 'disabled' : ''}>Copy text</button><button class="secondary" id="copy-register-json" ${!registers.length ? 'disabled' : ''}>Copy JSON</button></div></div>
-          ${registers.length ? `<div class="register-table" role="table"><div class="register-row heading" role="row"><span>Register</span><span>Hex value</span><span>Decimal</span></div>${registers.map((register) => `<div class="register-row" role="row"><strong>R${register.address}</strong><code>${registerHex(register.value)}</code><span>${register.value}</span></div>`).join('')}</div>` : '<div class="register-empty">Choose a register set and read it from the connected Barracuda.</div>'}
-        </article>
-      </div>
-    </section>`;
 }
 
 function renderControl(snapshot: Snapshot): string {
@@ -282,7 +240,7 @@ function renderControl(snapshot: Snapshot): string {
   return `
     <section class="content control-layout">
       <div class="control-card">
-      <div class="section-intro"><div><p class="eyebrow">Customer controls</p><h2>RF output</h2></div><label class="rf-slider-control ${control.rfEnabled ? 'on' : 'off'} ${rfPending ? 'pending' : ''}"><span><b>RF ${control.rfEnabled ? 'ON' : 'OFF'}</b><small>${rfPending ? 'Change pending' : 'Applied state'}</small></span><input id="rf-enabled" type="checkbox" ${control.rfEnabled ? 'checked' : ''} ${state.busy ? 'disabled' : ''}><i aria-hidden="true"></i></label></div>
+      <div class="section-intro"><h2>Mode</h2><label class="rf-slider-control ${control.rfEnabled ? 'on' : 'off'} ${rfPending ? 'pending' : ''}"><span><b>RF ${control.rfEnabled ? 'ON' : 'OFF'}</b><small>${rfPending ? 'Change pending' : 'Applied state'}</small></span><input id="rf-enabled" type="checkbox" ${control.rfEnabled ? 'checked' : ''} ${state.busy ? 'disabled' : ''}><i aria-hidden="true"></i></label></div>
         <div class="segment" role="group" aria-label="RF mode"><button data-mode="cw" class="${control.mode === 'cw' ? 'active' : ''}">CW</button><button data-mode="sweep" class="${control.mode === 'sweep' ? 'active' : ''}">Sweep</button></div>
         <form id="rf-form">
           ${control.mode === 'cw' ? `
@@ -393,7 +351,6 @@ function renderWorkspace(snapshot: Snapshot): string {
   let body = '';
   switch (state.tab) {
     case 'control': body = renderControl(snapshot); break;
-    case 'registers': body = renderRegisters(snapshot); break;
     case 'network': body = renderNetwork(snapshot); break;
     default: body = renderStatus(snapshot);
   }
@@ -413,13 +370,6 @@ function bindEvents(): void {
   document.querySelector('#empty-refresh')?.addEventListener('click', () => void discoverDevices());
   document.querySelector('#disconnect-device')?.addEventListener('click', () => void disconnectDevice());
   document.querySelector('#refresh-status')?.addEventListener('click', () => void refreshStatus(true));
-  document.querySelector('#read-registers')?.addEventListener('click', () => void readRegisters(false));
-  document.querySelector('#read-all-registers')?.addEventListener('click', () => void readRegisters(true));
-  document.querySelector('#copy-cli-command')?.addEventListener('click', () => {
-    if (state.snapshot) void copyText(registerCLICommand(state.snapshot), 'CLI command copied');
-  });
-  document.querySelector('#copy-register-text')?.addEventListener('click', () => void copyText(registerText(), 'Register text copied'));
-  document.querySelector('#copy-register-json')?.addEventListener('click', () => void copyText(JSON.stringify(state.registerResult, null, 2), 'Register JSON copied'));
 
   document.querySelectorAll<HTMLElement>('[data-tab]').forEach((button) => button.addEventListener('click', () => {
     state.tab = button.dataset.tab as Tab;
@@ -505,66 +455,6 @@ async function withAction<T>(message: string, action: () => Promise<T>): Promise
   }
 }
 
-function parseRegisterSpec(spec: string): number[] {
-  const addresses = new Set<number>();
-  const parseAddress = (raw: string): number => {
-    const value = raw.trim().replace(/^R/i, '');
-    const parsed = /^0x[0-9a-f]+$/i.test(value) ? Number.parseInt(value.slice(2), 16) : Number(value);
-    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 112) throw new Error(`Invalid register "${raw.trim()}". Use R0 through R112.`);
-    return parsed;
-  };
-  for (const item of spec.split(',')) {
-    const trimmed = item.trim();
-    if (!trimmed) throw new Error('Enter at least one register, for example 0-15, 44, R75.');
-    const range = trimmed.split('-');
-    if (range.length > 2) throw new Error(`Invalid register range "${trimmed}".`);
-    const first = parseAddress(range[0]);
-    const last = range.length === 2 ? parseAddress(range[1]) : first;
-    if (last < first) throw new Error(`Register range "${trimmed}" must be in ascending order.`);
-    for (let address = first; address <= last; address += 1) addresses.add(address);
-  }
-  return [...addresses].sort((left, right) => left - right);
-}
-
-async function readRegisters(all: boolean): Promise<void> {
-  const input = document.querySelector<HTMLInputElement>('#register-spec');
-  state.registerSpec = input?.value.trim() || state.registerSpec;
-  let addresses: number[];
-  try {
-    addresses = all ? [] : parseRegisterSpec(state.registerSpec);
-  } catch (error) {
-    state.notice = errorText(error);
-    state.noticeKind = 'error';
-    render();
-    window.setTimeout(clearNotice, 7000);
-    return;
-  }
-  const scope = all ? '' : state.registerSpec;
-  const message = all ? 'Read all 113 LMX2595 registers' : `Read ${addresses.length} LMX2595 register${addresses.length === 1 ? '' : 's'}`;
-  const result = await withAction(message, () => ReadLMXRegisters(addresses) as Promise<LMXRegisterReadResult>);
-  if (!result) return;
-  state.registerResult = { registers: Array.isArray(result.registers) ? result.registers : [] };
-  state.registerScope = scope;
-  render();
-}
-
-async function copyText(value: string, message: string): Promise<void> {
-  if (!value) return;
-  try {
-    const copied = await ClipboardSetText(value);
-    if (!copied) throw new Error('Windows did not accept the clipboard text.');
-    state.notice = message;
-    state.noticeKind = 'success';
-    render();
-    window.setTimeout(clearNotice, 2500);
-  } catch (error) {
-    state.notice = `Could not copy: ${errorText(error)}`;
-    state.noticeKind = 'error';
-    render();
-    window.setTimeout(clearNotice, 7000);
-  }
-}
-
 function clearNotice(): void {
   if (!state.notice) return;
   state.notice = '';
@@ -636,8 +526,6 @@ async function connectDevice(endpoint: Endpoint): Promise<void> {
   state.networkPlan = null;
   state.networkError = '';
   state.control.rfEnabled = result.status.rfEnabled;
-  state.registerResult = null;
-  state.registerScope = '';
   render();
 }
 
@@ -645,8 +533,6 @@ async function disconnectDevice(): Promise<void> {
   await withAction('Device disconnected', async () => { await Disconnect(); });
   state.snapshot = null;
   state.tab = 'control';
-  state.registerResult = null;
-  state.registerScope = '';
   render();
 }
 

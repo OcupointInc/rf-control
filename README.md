@@ -92,7 +92,7 @@ Ethernet works the same way with `--ip ADDRESS` instead of `--usb COM5`. Run
 ```
 
 See the [desktop GUI guide](docs/gui/README.md) for the complete workflow,
-Windows USB driver notes, register export, and network configuration.
+Windows USB driver notes and network configuration.
 
 ### RHEL 8 desktop GUI
 
