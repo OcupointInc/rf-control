@@ -60,8 +60,9 @@ driver for that interface.
 ## GUI workflow
 
 1. Launch the application. It opens idle and does not scan automatically.
-2. Enter the known address under **Connect by IP**, or explicitly scan for USB
-   and Ethernet devices. A scan stops after five seconds.
+2. Enter the known address under **Connect directly** (`COM5` or an IPv4
+   address), or explicitly scan for USB and Ethernet devices. A scan is bounded
+   by a five-second timeout in both the GUI and native backend.
 3. Select the Barracuda endpoint; the application opens directly on **RF
    Control**.
 4. Configure CW or sweep, desired output power, and the clock source, then

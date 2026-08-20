@@ -162,6 +162,28 @@ func TestStalledDiscoveryDoesNotBlockDirectConnection(t *testing.T) {
 	}
 }
 
+func TestDiscoverReturnsAtBackendDeadline(t *testing.T) {
+	service := serviceWithFake(barracudaFake())
+	service.scanTimeout = 25 * time.Millisecond
+	release := make(chan struct{})
+	service.listUSB = func() ([]string, error) {
+		<-release
+		return nil, nil
+	}
+
+	started := time.Now()
+	result := service.Discover()
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		close(release)
+		t.Fatalf("discovery exceeded backend deadline: %v", elapsed)
+	}
+	if !result.TimedOut || len(result.Warnings) != 1 {
+		close(release)
+		t.Fatalf("timeout result = %+v", result)
+	}
+	close(release)
+}
+
 func TestBarracudaCWUsesCustomerPlanAndHidesEngineeringState(t *testing.T) {
 	fake := barracudaFake()
 	service := serviceWithFake(fake)

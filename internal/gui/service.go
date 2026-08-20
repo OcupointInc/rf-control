@@ -15,7 +15,10 @@ import (
 	pb "github.com/OcupointInc/rf-control/controlpb"
 )
 
-const defaultControlPort = 5000
+const (
+	defaultControlPort = 5000
+	defaultScanTimeout = 5 * time.Second
+)
 
 // Endpoint identifies one way to reach a device.
 type Endpoint struct {
@@ -40,6 +43,7 @@ type DiscoveredDevice struct {
 type DiscoveryResult struct {
 	Devices  []DiscoveredDevice `json:"devices"`
 	Warnings []string           `json:"warnings"`
+	TimedOut bool               `json:"timedOut"`
 }
 
 type NetworkConfig struct {
@@ -149,6 +153,7 @@ type Service struct {
 	open             func(Endpoint) (deviceClient, error)
 	listUSB          func() ([]string, error)
 	discoverEthernet func(time.Duration) ([]*pb.DiscoveryResponse, error)
+	scanTimeout      time.Duration
 }
 
 func NewService() *Service {
@@ -156,6 +161,7 @@ func NewService() *Service {
 		open:             openDevice,
 		listUSB:          client.ListCandidatePorts,
 		discoverEthernet: client.DiscoverEthernet,
+		scanTimeout:      defaultScanTimeout,
 	}
 }
 
@@ -189,6 +195,30 @@ func openDevice(endpoint Endpoint) (deviceClient, error) {
 }
 
 func (s *Service) Discover() DiscoveryResult {
+	// Enforce the deadline in Go as well as in the frontend. Native serial-port
+	// enumeration and open calls are owned by the host driver and can block a
+	// Wails binding long enough that a JavaScript-only timer is not sufficient.
+	done := make(chan DiscoveryResult, 1)
+	go func() { done <- s.discover() }()
+
+	timeout := s.scanTimeout
+	if timeout <= 0 {
+		timeout = defaultScanTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result
+	case <-timer.C:
+		return DiscoveryResult{
+			Warnings: []string{"Device scan timed out after 5 seconds. You can connect directly using its COM port or IP address."},
+			TimedOut: true,
+		}
+	}
+}
+
+func (s *Service) discover() DiscoveryResult {
 	// Only hold the session lock long enough to copy the active snapshot. USB
 	// enumeration is host/driver controlled and may occasionally stall; a scan
 	// must not prevent the user from connecting directly by IP after the GUI's

@@ -210,6 +210,7 @@ export namespace gui {
 	export class DiscoveryResult {
 	    devices: DiscoveredDevice[];
 	    warnings: string[];
+	    timedOut: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new DiscoveryResult(source);
@@ -219,6 +220,7 @@ export namespace gui {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.devices = this.convertValues(source["devices"], DiscoveredDevice);
 	        this.warnings = source["warnings"];
+	        this.timedOut = source["timedOut"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

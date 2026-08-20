@@ -22,7 +22,7 @@ type DiscoveredDevice = {
   macAddress: string;
   connections: Endpoint[];
 };
-type DiscoveryResult = { devices: DiscoveredDevice[]; warnings: string[] };
+type DiscoveryResult = { devices: DiscoveredDevice[]; warnings: string[]; timedOut: boolean };
 type NetworkConfig = {
   ipAddress: string;
   gateway: string;
@@ -77,7 +77,7 @@ const scanTimeoutMs = 5000;
 const nominalMaximumOutputDbm = -25;
 
 const state = {
-  discovery: { devices: [], warnings: [] } as DiscoveryResult,
+  discovery: { devices: [], warnings: [], timedOut: false } as DiscoveryResult,
   snapshot: null as Snapshot | null,
   tab: 'control' as Tab,
   busy: false,
@@ -167,9 +167,9 @@ function renderSidebar(): string {
       <div class="devices">${devices || '<div class="empty-small">No devices discovered</div>'}</div>
       ${warnings}
       <form class="manual-connect" id="manual-connect">
-        <label for="manual-ip">Connect by IP</label>
-        <div><input id="manual-ip" inputmode="decimal" placeholder="192.168.50.25" required><button ${state.busy ? 'disabled' : ''}>Connect</button></div>
-        <small>Use this when broadcast discovery is blocked.</small>
+        <label for="manual-address">Connect directly</label>
+        <div><input id="manual-address" placeholder="COM5 or 192.168.0.246" required><button ${state.busy ? 'disabled' : ''}>Connect</button></div>
+        <small>Enter a Windows COM port or device IP address.</small>
       </form>
       <div class="sidebar-footer"><span>Local control only</span><span>CLI fallback included</span></div>
     </aside>`;
@@ -361,8 +361,10 @@ function bindEvents(): void {
 
   document.querySelector<HTMLFormElement>('#manual-connect')?.addEventListener('submit', (event) => {
     event.preventDefault();
-    const address = (document.querySelector<HTMLInputElement>('#manual-ip')?.value || '').trim();
-    if (address) void connectDevice({ kind: 'ethernet', address, port: 5000 });
+    const address = (document.querySelector<HTMLInputElement>('#manual-address')?.value || '').trim();
+    if (!address) return;
+    const usb = /^COM\d+$/i.test(address);
+    void connectDevice({ kind: usb ? 'usb' : 'ethernet', address: usb ? address.toUpperCase() : address, port: usb ? 0 : 5000 });
   });
 
   document.querySelector<HTMLFormElement>('#rf-form')?.addEventListener('submit', (event) => {
@@ -457,13 +459,15 @@ async function discoverDevices(): Promise<void> {
     const completed = new Date().toLocaleTimeString([], {
       hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
-    const message = count === 0
+    const message = result.timedOut
+      ? 'Scan timed out after 5 seconds. Enter the COM port below to connect directly.'
+      : count === 0
       ? `No devices found · scan completed at ${completed}. USB requires a COM port, not WinUSB.`
       : `${count} device${count === 1 ? '' : 's'} found · scan completed at ${completed}`;
     state.scanMessage = message;
-    state.scanKind = count === 0 ? 'empty' : 'success';
+    state.scanKind = result.timedOut ? 'error' : count === 0 ? 'empty' : 'success';
     state.notice = message;
-    state.noticeKind = count === 0 ? 'info' : 'success';
+    state.noticeKind = result.timedOut ? 'error' : count === 0 ? 'info' : 'success';
     window.setTimeout(clearNotice, 4500);
   } catch (error) {
     const detail = errorText(error);
