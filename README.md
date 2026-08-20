@@ -189,8 +189,8 @@ CW at 400 MHz IF using the internal clock:
 rf-control --ip 192.168.1.253 cw --frequency 400
 ```
 
-Continuous 50–1500 MHz IF sweep over 10 seconds using an external 10 MHz
-reference:
+Continuous 50–1500 MHz IF sweep over 10 seconds using an external reference
+(10–100 MHz):
 
 ```bash
 rf-control --ip 192.168.1.253 sweep \
