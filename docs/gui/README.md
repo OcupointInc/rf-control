@@ -72,7 +72,7 @@ driver for that interface.
    automatically derived `/24` subnet and `.1` gateway before applying it.
 6. Allow the device to reboot and reconnect at its Ethernet address.
 
-The GUI displays only customer IF frequencies for Barracuda. LO, mixer, and
+The GUI displays only customer RF frequencies for Barracuda. LO, mixer, and
 synthesizer settings remain internal. A failed Barracuda configuration leaves
 the output safely attenuated.
 

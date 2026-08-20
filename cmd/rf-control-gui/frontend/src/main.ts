@@ -218,10 +218,10 @@ function renderControl(snapshot: Snapshot): string {
         <div class="segment" role="group" aria-label="RF mode"><button data-mode="cw" class="${control.mode === 'cw' ? 'active' : ''}">CW</button><button data-mode="sweep" class="${control.mode === 'sweep' ? 'active' : ''}">Sweep</button></div>
         <form id="rf-form">
           ${control.mode === 'cw' ? `
-            <div class="field"><label for="cw-frequency">IF frequency</label><div class="input-unit"><input id="cw-frequency" type="number" min="50" max="1500" step="1" value="${control.cwMHz}" required><span>MHz</span></div><small>Allowed range: 50–1500 MHz IF</small></div>` : `
+            <div class="field"><label for="cw-frequency">RF frequency</label><div class="input-unit"><input id="cw-frequency" type="number" min="50" max="1500" step="1" value="${control.cwMHz}" required><span>MHz</span></div><small>Allowed range: 50–1500 MHz RF</small></div>` : `
             <div class="field-row">
-              <div class="field"><label for="sweep-start">Start IF</label><div class="input-unit"><input id="sweep-start" type="number" min="50" max="1499" step="1" value="${control.startMHz}" required><span>MHz</span></div></div>
-              <div class="field"><label for="sweep-stop">Stop IF</label><div class="input-unit"><input id="sweep-stop" type="number" min="51" max="1500" step="1" value="${control.stopMHz}" required><span>MHz</span></div></div>
+              <div class="field"><label for="sweep-start">Start frequency</label><div class="input-unit"><input id="sweep-start" type="number" min="50" max="1499" step="1" value="${control.startMHz}" required><span>MHz</span></div></div>
+              <div class="field"><label for="sweep-stop">Stop frequency</label><div class="input-unit"><input id="sweep-stop" type="number" min="51" max="1500" step="1" value="${control.stopMHz}" required><span>MHz</span></div></div>
               <div class="field"><label for="sweep-time">Sweep time</label><input id="sweep-time" value="${escapeHTML(control.sweepTime)}" placeholder="10s" required><small>Examples: 10s, 20ms, 35us</small></div>
             </div>`}
           <div class="field-row output-settings">
@@ -236,7 +236,7 @@ function renderControl(snapshot: Snapshot): string {
 }
 
 function renderBarracudaFacts(status: DeviceStatus): string {
-  const frequency = status.ifFrequencyMHz ? `${status.ifFrequencyMHz}${status.sweepStopIfMHz ? `–${status.sweepStopIfMHz}` : ''} MHz IF` : 'Unavailable';
+  const frequency = status.ifFrequencyMHz ? `${status.ifFrequencyMHz}${status.sweepStopIfMHz ? `–${status.sweepStopIfMHz}` : ''} MHz RF` : 'Unavailable';
   return `<dl class="facts">
     <div><dt>Frequency</dt><dd>${escapeHTML(frequency)}</dd></div>
     ${status.sweepTime ? `<div><dt>Sweep time</dt><dd>${escapeHTML(status.sweepTime)}</dd></div>` : ''}
