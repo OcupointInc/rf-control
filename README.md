@@ -84,13 +84,17 @@ rf-control --ip 192.168.1.50 get            # over the network
 
 With no `--usb` or `--ip`, USB is auto-discovered.
 
-### Change just the IP (MAC, hostname, serial preserved)
+### Set the customer network address
 
 ```bash
-rf-control --usb /dev/ttyACM1 set-ip --address 192.168.1.50
+rf-control --usb /dev/ttyACM1 set-ip 192.168.50.25
 ```
 
-### Change multiple network fields at once
+The customer shorthand automatically uses gateway `192.168.50.1` and subnet
+`255.255.255.0`. In general, `set-ip A.B.C.D` derives gateway `A.B.C.1` and a
+`/24` subnet. MAC, hostname, and serial number are preserved.
+
+### Engineering: use a nonstandard network
 
 ```bash
 rf-control --usb /dev/ttyACM1 set-ip \
@@ -175,7 +179,8 @@ sweep --start <MHz> --stop <MHz> --time <duration>
                        Customer continuous sweep at 50-1500 MHz IF
 list                   Discover Ethernet and USB devices
 get                    Print the current device configuration
-set-ip [flags]         Change --address, --gateway, --subnet, --hostname
+set-ip ADDRESS         Set IP; derive a /24 subnet and gateway x.x.x.1
+set-ip [flags]         Engineering network overrides
 apply-json <file>      Apply a JSON network config file
 apply [file]           Apply a full-device JSON config from stdin (or a file)
                        and print a JSON result — the command to call from Python

@@ -159,6 +159,30 @@ func ipString(b []byte) string {
 	return fmt.Sprintf("%d.%d.%d.%d", b[0], b[1], b[2], b[3])
 }
 
+// deriveCustomerNetwork turns the single customer-facing IP input into the
+// standard lab network plan: a /24 subnet with the gateway at host .1.
+func deriveCustomerNetwork(address string) (ip, gateway, subnet []byte, err error) {
+	ip, err = parseIPv4(address)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if ip[0] == 0 || ip[0] == 127 || ip[0] >= 224 {
+		return nil, nil, nil, usagef("customer IP must be a unicast address (got %q)", address)
+	}
+	switch ip[3] {
+	case 0:
+		return nil, nil, nil, usagef("customer IP %q is the derived /24 network address; choose host .2 through .254", address)
+	case 1:
+		return nil, nil, nil, usagef("customer IP %q conflicts with the derived .1 gateway; choose host .2 through .254", address)
+	case 255:
+		return nil, nil, nil, usagef("customer IP %q is the derived /24 broadcast address; choose host .2 through .254", address)
+	}
+	gateway = append([]byte(nil), ip...)
+	gateway[3] = 1
+	subnet = []byte{255, 255, 255, 0}
+	return ip, gateway, subnet, nil
+}
+
 // ----- subcommands -----------------------------------------------------------
 
 func cmdGet(args []string) error {
@@ -200,6 +224,17 @@ func cmdGet(args []string) error {
 
 func cmdSetIP(args []string) error {
 	fs := flag.NewFlagSet("set-ip", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `Usage:
+  rf-control [--ip CURRENT | --usb DEVICE] set-ip NEW_ADDRESS
+  rf-control [--ip CURRENT | --usb DEVICE] set-ip [engineering flags]
+
+The customer form derives gateway A.B.C.1 and subnet 255.255.255.0 from
+NEW_ADDRESS A.B.C.D. Use the engineering flags for a nonstandard network.
+
+Engineering flags:`)
+		fs.PrintDefaults()
+	}
 	common := &commonFlags{}
 	addCommonFlags(fs, common)
 	newIP := fs.String("address", "", "New IPv4 address (e.g. 192.168.1.50)")
@@ -208,8 +243,24 @@ func cmdSetIP(args []string) error {
 	newHost := fs.String("hostname", "", "New mDNS hostname (without .local)")
 	_ = fs.Parse(args)
 
-	if *newIP == "" && *newGW == "" && *newSN == "" && *newHost == "" {
-		return errors.New("provide at least one of --address, --gateway, --subnet, --hostname")
+	if fs.NArg() > 1 {
+		return usagef("set-ip accepts one customer IP address (got %d arguments)", fs.NArg())
+	}
+	shorthand := fs.NArg() == 1
+	var shorthandIP, shorthandGW, shorthandSN []byte
+	if shorthand {
+		if *newIP != "" || *newGW != "" || *newSN != "" {
+			return usagef("set-ip ADDRESS cannot be combined with --address, --gateway, or --subnet")
+		}
+		var err error
+		shorthandIP, shorthandGW, shorthandSN, err = deriveCustomerNetwork(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+	}
+
+	if !shorthand && *newIP == "" && *newGW == "" && *newSN == "" && *newHost == "" {
+		return usagef("provide an IP address, or use --address, --gateway, --subnet, or --hostname")
 	}
 
 	tx, err := common.makeTransport()
@@ -231,17 +282,22 @@ func cmdSetIP(args []string) error {
 		return parseIPv4(override)
 	}
 
-	ipBytes, err := pickIP(*newIP, cur.StaticIp)
-	if err != nil {
-		return err
-	}
-	gwBytes, err := pickIP(*newGW, cur.StaticGateway)
-	if err != nil {
-		return err
-	}
-	snBytes, err := pickIP(*newSN, cur.StaticSubnet)
-	if err != nil {
-		return err
+	var ipBytes, gwBytes, snBytes []byte
+	if shorthand {
+		ipBytes, gwBytes, snBytes = shorthandIP, shorthandGW, shorthandSN
+	} else {
+		ipBytes, err = pickIP(*newIP, cur.StaticIp)
+		if err != nil {
+			return err
+		}
+		gwBytes, err = pickIP(*newGW, cur.StaticGateway)
+		if err != nil {
+			return err
+		}
+		snBytes, err = pickIP(*newSN, cur.StaticSubnet)
+		if err != nil {
+			return err
+		}
 	}
 	host := cur.MdnsHostname
 	if *newHost != "" {
@@ -249,6 +305,9 @@ func cmdSetIP(args []string) error {
 	}
 
 	fmt.Println("Applying network change:")
+	if shorthand {
+		fmt.Println("  Plan     : customer default (/24 subnet, gateway .1)")
+	}
 	fmt.Printf("  IP       : %s  ->  %s\n", ipString(cur.StaticIp), ipString(ipBytes))
 	fmt.Printf("  Gateway  : %s  ->  %s\n", ipString(cur.StaticGateway), ipString(gwBytes))
 	fmt.Printf("  Subnet   : %s  ->  %s\n", ipString(cur.StaticSubnet), ipString(snBytes))
@@ -2146,7 +2205,7 @@ Customer commands:
   status                 Show current IF, clock, attenuation, lock, and temperature.
   list                   Discover Ethernet and USB devices.
   get                    Show device identity and network configuration.
-  set-ip [flags]         Change network configuration.
+  set-ip ADDRESS         Set IP with a /24 subnet and gateway x.x.x.1.
   version                Show the rf-control version.
   help                   Show this help.
 
@@ -2179,8 +2238,10 @@ Commands:
                          50..1500 MHz IF; 0 dB attenuation is nominally -25 dBm.
   list                   Discover Ethernet and USB devices matching firmware.
   get                    Print the current device configuration.
-  set-ip [flags]         Change one or more of: --address, --gateway,
-                         --subnet, --hostname. Preserves MAC + serial.
+  set-ip ADDRESS         Customer shorthand: set IP, derive a /24 subnet and
+                         gateway at .1. Example: set-ip 192.168.50.25.
+  set-ip [flags]         Engineering form: change one or more of --address,
+                         --gateway, --subnet, --hostname. Preserves MAC + serial.
   apply-json <file>      Apply a JSON config file with fields:
                          static_ip, static_gateway, static_subnet, hostname.
   apply [file]           Read one JSON config (from stdin, or a file / "-")

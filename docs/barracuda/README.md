@@ -15,6 +15,15 @@ rf-control list
 Use the Barracuda IP address printed under `Ethernet devices` in the commands
 below. USB can be used instead with `--usb DEVICE`.
 
+To change the unit to `192.168.50.25` over USB:
+
+```bash
+rf-control --usb /dev/ttyACM1 set-ip 192.168.50.25
+```
+
+This customer command automatically sets gateway `192.168.50.1` and subnet
+`255.255.255.0`. The unit reboots after applying the network change.
+
 ## 2. Generate a CW tone
 
 ```bash

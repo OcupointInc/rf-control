@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -11,6 +12,46 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestDeriveCustomerNetwork(t *testing.T) {
+	tests := []struct {
+		address string
+		ip      []byte
+		gateway []byte
+	}{
+		{"192.168.50.25", []byte{192, 168, 50, 25}, []byte{192, 168, 50, 1}},
+		{"10.20.30.254", []byte{10, 20, 30, 254}, []byte{10, 20, 30, 1}},
+	}
+	for _, test := range tests {
+		ip, gateway, subnet, err := deriveCustomerNetwork(test.address)
+		if err != nil {
+			t.Fatalf("deriveCustomerNetwork(%q): %v", test.address, err)
+		}
+		if !bytes.Equal(ip, test.ip) || !bytes.Equal(gateway, test.gateway) ||
+			!bytes.Equal(subnet, []byte{255, 255, 255, 0}) {
+			t.Errorf("deriveCustomerNetwork(%q) = %v, %v, %v", test.address, ip, gateway, subnet)
+		}
+		gateway[3] = 99
+		if ip[3] != test.ip[3] {
+			t.Errorf("derived gateway aliases IP storage: ip=%v gateway=%v", ip, gateway)
+		}
+	}
+
+	for _, address := range []string{
+		"not-an-ip", "0.10.20.30", "127.0.0.2", "224.0.0.2",
+		"192.168.50.0", "192.168.50.1", "192.168.50.255",
+	} {
+		_, _, _, err := deriveCustomerNetwork(address)
+		if err == nil {
+			t.Errorf("deriveCustomerNetwork(%q) succeeded, want error", address)
+			continue
+		}
+		var usage *usageError
+		if !errors.As(err, &usage) {
+			t.Errorf("deriveCustomerNetwork(%q) error = %T, want usageError", address, err)
+		}
+	}
+}
 
 // resolveEnumArg must accept a bare integer, a canonical name, and a friendly
 // alias — and reject unknown strings. The integer path is the regression guard:
