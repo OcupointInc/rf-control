@@ -123,6 +123,45 @@ func TestDiscoverCombinesUSBAndEthernetByMAC(t *testing.T) {
 	}
 }
 
+func TestStalledDiscoveryDoesNotBlockDirectConnection(t *testing.T) {
+	fake := barracudaFake()
+	service := serviceWithFake(fake)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	service.listUSB = func() ([]string, error) {
+		close(started)
+		<-release
+		return nil, nil
+	}
+	discoveryDone := make(chan struct{})
+	go func() {
+		service.Discover()
+		close(discoveryDone)
+	}()
+	<-started
+
+	connectDone := make(chan error, 1)
+	go func() {
+		_, err := service.Connect(Endpoint{Kind: "ethernet", Address: "192.168.0.246", Port: 5000})
+		connectDone <- err
+	}()
+	select {
+	case err := <-connectDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("direct connection blocked behind stalled discovery")
+	}
+
+	close(release)
+	select {
+	case <-discoveryDone:
+	case <-time.After(time.Second):
+		t.Fatal("discovery did not finish after USB enumeration resumed")
+	}
+}
+
 func TestBarracudaCWUsesCustomerPlanAndHidesEngineeringState(t *testing.T) {
 	fake := barracudaFake()
 	service := serviceWithFake(fake)

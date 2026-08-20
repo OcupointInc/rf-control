@@ -189,9 +189,9 @@ operation. The normal `rf-control help` output shows only the customer surface.
 See the one-page [Barracuda customer guide](docs/barracuda/README.md) for the
 handoff instructions.
 
-The desktop GUI presents the same safe operations as forms and includes a
-guided first-bring-up workflow. It calls the shared Go client directly; the CLI
-does not need to be running and remains available as an independent fallback.
+The desktop GUI presents the same safe operations as a streamlined RF Control
+screen. It calls the shared Go client directly; the CLI does not need to be
+running and remains available as an independent fallback.
 
 ---
 

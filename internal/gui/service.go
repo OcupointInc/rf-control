@@ -189,8 +189,21 @@ func openDevice(endpoint Endpoint) (deviceClient, error) {
 }
 
 func (s *Service) Discover() DiscoveryResult {
+	// Only hold the session lock long enough to copy the active snapshot. USB
+	// enumeration is host/driver controlled and may occasionally stall; a scan
+	// must not prevent the user from connecting directly by IP after the GUI's
+	// five-second scan timeout expires.
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	activeUSB := ""
+	var activeSnapshot *DeviceSnapshot
+	if s.active != nil {
+		snapshot := s.snapshotLocked()
+		activeSnapshot = &snapshot
+		if s.active.endpoint.Kind == "usb" {
+			activeUSB = s.active.endpoint.Address
+		}
+	}
+	s.mu.Unlock()
 
 	byID := make(map[string]*DiscoveredDevice)
 	var warnings []string
@@ -231,12 +244,8 @@ func (s *Service) Discover() DiscoveryResult {
 		byID[key] = &copy
 	}
 
-	activeUSB := ""
-	if s.active != nil {
-		add(discoveredFromSnapshot(s.snapshotLocked()))
-		if s.active.endpoint.Kind == "usb" {
-			activeUSB = s.active.endpoint.Address
-		}
+	if activeSnapshot != nil {
+		add(discoveredFromSnapshot(*activeSnapshot))
 	}
 
 	ports, err := s.listUSB()

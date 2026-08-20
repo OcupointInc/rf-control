@@ -52,21 +52,28 @@ add it to the system's serial-device access group according to the lab's RHEL
 policy, then sign out and back in. Ethernet control does not require serial
 device permissions.
 
+On Windows, the control interface must appear under **Ports (COM & LPT)** as a
+USB serial/COM device. If Device Manager shows it using the **WinUSB** driver,
+the serial transport cannot open it; restore the Windows USB serial (`usbser`)
+driver for that interface.
+
 ## GUI workflow
 
-1. Launch the application and scan for devices.
-2. Select the Barracuda USB-C endpoint.
-3. Follow **First Bring-Up** to verify CW, sweep, and the external 10 MHz
-   reference.
-4. Use **Network** to view or assign the device IP. The GUI previews the
+1. Launch the application. It opens idle and does not scan automatically.
+2. Enter the known address under **Connect by IP**, or explicitly scan for USB
+   and Ethernet devices. A scan stops after five seconds.
+3. Select the Barracuda endpoint; the application opens directly on **RF
+   Control**.
+4. Configure CW or sweep, desired output power, and the clock source, then
+   press **Apply**. Output power is entered from −25 to −56 dBm; the GUI maps
+   that range to the internal 0–31 dB attenuation setting.
+5. Use **Network** to view or assign the device IP. The GUI previews the
    automatically derived `/24` subnet and `.1` gateway before applying it.
-5. Allow the device to reboot, scan again, and select its Ethernet endpoint.
-6. Use **RF Control** for normal CW or sweep operation.
+6. Allow the device to reboot and reconnect at its Ethernet address.
 
 The GUI displays only customer IF frequencies for Barracuda. LO, mixer, and
 synthesizer settings remain internal. A failed Barracuda configuration leaves
-the output at maximum attenuation. The **Set maximum attenuation** button is
-also always available on the RF Control screen.
+the output safely attenuated.
 
 Other Ocupoint firmware variants appear in discovery and provide read-only
 identity/status plus network configuration. Their product-specific controls

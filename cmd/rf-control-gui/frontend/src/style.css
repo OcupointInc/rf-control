@@ -81,7 +81,6 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .chip i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
 .chip.good { color: var(--green); border-color: #22533f; }
 .chip.bad { color: var(--red); border-color: #61353d; }
-.chip.caution { color: var(--amber); border-color: #604e2e; }
 .chip.neutral { color: #9fb1c5; }
 .tabs { display: flex; gap: 25px; padding: 0 38px; border-bottom: 1px solid var(--line); }
 .tabs button { position: relative; padding: 13px 1px 14px; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 700; }
@@ -93,36 +92,19 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .section-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 25px; margin-bottom: 22px; }
 .section-intro h2 { margin: 5px 0 0; font-size: 21px; }
 .section-intro > p { max-width: 420px; margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.step-list { display: grid; gap: 10px; }
-.step { display: grid; grid-template-columns: 50px 1fr; gap: 15px; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: rgba(17, 30, 46, .9); }
-.step-number { display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid #2e5978; border-radius: 50%; color: var(--blue); font-size: 11px; font-weight: 800; }
-.step-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
-.step h3, .panel h3, .live-panel h3 { margin: 0; font-size: 14px; }
-.step p { margin: 8px 0; color: #aab9ca; font-size: 12px; line-height: 1.5; }
-.step ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
-.step-state { padding: 5px 8px; border: 1px solid var(--line); border-radius: 14px; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
-.step-state.pass { color: var(--green); border-color: #2a614a; }
-.step-state.fail { color: var(--red); border-color: #623a40; }
-.step-state.manual { color: var(--amber); border-color: #5c4c2d; }
-.step-actions { display: flex; align-items: center; gap: 14px; margin-top: 12px; }
-.step-actions span { color: var(--muted); font-size: 10px; }
+.panel h3, .live-panel h3 { margin: 0; font-size: 14px; }
 
-button.primary, button.secondary, button.danger-quiet { min-height: 36px; padding: 0 15px; border-radius: 7px; cursor: pointer; font-size: 11px; font-weight: 800; }
+button.primary, button.secondary { min-height: 36px; padding: 0 15px; border-radius: 7px; cursor: pointer; font-size: 11px; font-weight: 800; }
 button.primary { border: 1px solid #338bc1; background: linear-gradient(#2386bd, #17658f); box-shadow: 0 5px 18px rgba(30, 132, 188, .16); }
 button.primary:hover { filter: brightness(1.12); }
 button.secondary { border: 1px solid var(--line); background: #142234; }
 button.secondary:hover { border-color: #48637f; }
-button.danger-quiet { border: 1px solid #6b3d43; background: #281a20; color: #ff9a9a; }
 button.large { min-height: 42px; padding: 0 22px; }
 
 .control-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; align-items: start; }
 .control-card, .live-panel, .panel { padding: 23px; border: 1px solid var(--line); border-radius: 12px; background: rgba(17, 30, 46, .92); }
 .live-panel { position: sticky; top: 20px; }
 .live-panel h3 { margin: 7px 0 19px; font-size: 18px; }
-.power-readout { text-align: right; }
-.power-readout small, .power-readout strong { display: block; }
-.power-readout small { margin-bottom: 4px; color: var(--muted); font-size: 9px; text-transform: uppercase; }
-.power-readout strong { color: var(--cyan); font-size: 19px; font-variant-numeric: tabular-nums; }
 .segment { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #0b1623; }
 .segment button { min-width: 88px; padding: 8px 15px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 800; }
 .segment button.active { background: #1c4665; color: white; }

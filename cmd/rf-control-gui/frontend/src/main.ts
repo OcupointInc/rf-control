@@ -9,7 +9,6 @@ import {
   GetStatus,
   PreviewNetwork,
   SetIPAddress,
-  SetMaximumAttenuation,
 } from '../wailsjs/go/main/App';
 
 type Endpoint = { kind: 'usb' | 'ethernet'; address: string; port: number };
@@ -72,12 +71,15 @@ type Snapshot = {
   customerControl: boolean;
 };
 type NetworkPlan = { ipAddress: string; gateway: string; subnet: string };
-type Tab = 'bringup' | 'control' | 'status' | 'network';
+type Tab = 'control' | 'status' | 'network';
+
+const scanTimeoutMs = 5000;
+const nominalMaximumOutputDbm = -25;
 
 const state = {
   discovery: { devices: [], warnings: [] } as DiscoveryResult,
   snapshot: null as Snapshot | null,
-  tab: 'bringup' as Tab,
+  tab: 'control' as Tab,
   busy: false,
   scanning: false,
   scanMessage: 'Press Scan for devices to begin',
@@ -90,10 +92,9 @@ const state = {
     startMHz: 50,
     stopMHz: 1500,
     sweepTime: '10s',
-    attenuation: 0,
+    outputPowerDbm: nominalMaximumOutputDbm,
     clock: 'internal' as 'internal' | 'external',
   },
-  bringup: {} as Record<string, 'pass' | 'failed'>,
   networkInput: '',
   networkPlan: null as NetworkPlan | null,
   networkError: '',
@@ -130,7 +131,6 @@ const statusStrip = (status: DeviceStatus): string => `
     <span class="chip good"><i></i>Connected</span>
     ${lockChip('Signal', status.signalLockApplicable, status.signalLocked)}
     ${lockChip('10 MHz reference', status.referenceLockApplicable, status.referenceLocked)}
-    ${status.maximumAttenuation ? '<span class="chip caution"><i></i>Maximum attenuation</span>' : ''}
     ${status.temperatureAvailable ? `<span class="chip neutral">${status.temperatureC.toFixed(1)} °C${status.temperatureBootSample ? ' boot sample' : ''}</span>` : ''}
   </div>`;
 
@@ -181,7 +181,7 @@ function renderEmpty(): string {
       <div class="signal-art" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
       <p class="eyebrow">Hardware control</p>
       <h1>Select an RF device</h1>
-      <p>Connect over USB-C for first bring-up, or select an Ethernet endpoint for normal operation.</p>
+      <p>Enter a known Ethernet address, or scan for a USB-C or Ethernet device.</p>
       <button class="primary" id="empty-refresh" ${state.busy ? 'disabled' : ''}>${state.scanning ? 'Scanning USB and Ethernet…' : 'Scan for devices'}</button>
     </main>`;
 }
@@ -203,41 +203,18 @@ function renderHeader(snapshot: Snapshot): string {
 
 function renderTabs(snapshot: Snapshot): string {
   const tabs: Array<[Tab, string]> = snapshot.customerControl
-    ? [['bringup', 'First Bring-Up'], ['control', 'RF Control'], ['status', 'Status'], ['network', 'Network']]
+    ? [['control', 'RF Control'], ['status', 'Status'], ['network', 'Network']]
     : [['status', 'Status'], ['network', 'Network']];
-  if (!snapshot.customerControl && (state.tab === 'bringup' || state.tab === 'control')) state.tab = 'status';
+  if (!snapshot.customerControl && state.tab === 'control') state.tab = 'status';
   return `<nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`).join('')}</nav>`;
-}
-
-function resultBadge(id: string): string {
-  const result = state.bringup[id];
-  if (!result) return '<span class="step-state">Not run</span>';
-  return result === 'pass' ? '<span class="step-state pass">Software check passed</span>' : '<span class="step-state fail">Software check failed</span>';
-}
-
-function renderBringup(snapshot: Snapshot): string {
-  const refPassed = snapshot.status.clock === 'external' && snapshot.status.referenceLocked && snapshot.status.signalLocked;
-  return `
-    <section class="content bringup">
-      <div class="section-intro"><div><p class="eyebrow">Guided acceptance</p><h2>Barracuda first bring-up</h2></div><p>Verify the RF path over USB-C before moving control to Ethernet.</p></div>
-      ${snapshot.endpoint.kind !== 'usb' ? '<div class="callout warning">First bring-up should be performed over USB-C. This device is currently connected over Ethernet.</div>' : ''}
-      <div class="step-list">
-        <article class="step"><span class="step-number">01</span><div class="step-body"><div class="step-heading"><h3>Connect the hardware</h3><span class="step-state manual">Operator check</span></div><p>Connect Ethernet, an RF SMA measurement cable to Port A or B, USB-C, and then the 12 V supply.</p><ul><li>Measurement instrument is configured for a 50–1500 MHz IF.</li><li>External 10 MHz reference is available for the final test.</li></ul></div></article>
-        <article class="step"><span class="step-number">02</span><div class="step-body"><div class="step-heading"><h3>Verify a CW tone</h3>${resultBadge('cw')}</div><p>Configure 400 MHz IF, internal clock, and 0 dB attenuation.</p><div class="step-actions"><button class="primary" id="bringup-cw" ${state.busy ? 'disabled' : ''}>Run CW test</button><span>Expected: signal locked and approximately −25 dBm at operating temperature.</span></div></div></article>
-        <article class="step"><span class="step-number">03</span><div class="step-body"><div class="step-heading"><h3>Verify a continuous sweep</h3>${resultBadge('sweep')}</div><p>Sweep 50–1500 MHz IF over 10 seconds using the internal clock.</p><div class="step-actions"><button class="primary" id="bringup-sweep" ${state.busy ? 'disabled' : ''}>Run sweep test</button><span>Confirm the requested sweep on the measurement instrument.</span></div></div></article>
-        <article class="step"><span class="step-number">04</span><div class="step-body"><div class="step-heading"><h3>Verify the external 10 MHz reference</h3>${resultBadge('reference')}</div><p>Connect and enable the external reference before running this check.</p><div class="step-actions"><button class="primary" id="bringup-reference" ${state.busy ? 'disabled' : ''}>Test external reference</button><span>${refPassed ? 'Reference and signal are locked.' : 'RF remains at maximum attenuation if lock validation fails.'}</span></div></div></article>
-        <article class="step"><span class="step-number">05</span><div class="step-body"><div class="step-heading"><h3>Move control to Ethernet</h3><span class="step-state">Final step</span></div><p>Review or update the static IP, allow the unit to reboot, and reconnect at the new Ethernet address.</p><div class="step-actions"><button class="secondary" data-tab="network">Open network settings</button></div></div></article>
-      </div>
-    </section>`;
 }
 
 function renderControl(snapshot: Snapshot): string {
   const control = state.control;
-  const estimate = -25 - Number(control.attenuation || 0);
   return `
     <section class="content control-layout">
       <div class="control-card">
-        <div class="section-intro"><div><p class="eyebrow">Customer controls</p><h2>RF output</h2></div><span class="power-readout"><small>Estimated output</small><strong id="power-estimate">${estimate.toFixed(2)} dBm</strong></span></div>
+        <div class="section-intro"><div><p class="eyebrow">Customer controls</p><h2>RF output</h2></div></div>
         <div class="segment" role="group" aria-label="RF mode"><button data-mode="cw" class="${control.mode === 'cw' ? 'active' : ''}">CW</button><button data-mode="sweep" class="${control.mode === 'sweep' ? 'active' : ''}">Sweep</button></div>
         <form id="rf-form">
           ${control.mode === 'cw' ? `
@@ -248,10 +225,10 @@ function renderControl(snapshot: Snapshot): string {
               <div class="field"><label for="sweep-time">Sweep time</label><input id="sweep-time" value="${escapeHTML(control.sweepTime)}" placeholder="10s" required><small>Examples: 10s, 20ms, 35us</small></div>
             </div>`}
           <div class="field-row output-settings">
-            <div class="field"><label for="attenuation">Digital attenuation</label><div class="input-unit"><input id="attenuation" type="number" min="0" max="31.75" step="0.25" value="${control.attenuation}" required><span>dB</span></div><small>0–31.75 dB in 0.25 dB steps</small></div>
+            <div class="field"><label for="output-power">Output power</label><div class="input-unit"><input id="output-power" type="number" min="-56" max="-25" step="0.25" value="${control.outputPowerDbm}" required><span>dBm</span></div><small>−25 to −56 dBm in 0.25 dB steps; nominal −25 dBm at maximum output.</small></div>
             <fieldset class="field"><legend>Clock source</legend><div class="radio-row"><label><input type="radio" name="clock" value="internal" ${control.clock === 'internal' ? 'checked' : ''}>Internal</label><label><input type="radio" name="clock" value="external" ${control.clock === 'external' ? 'checked' : ''}>External 10 MHz</label></div><small>External mode must lock before RF is enabled.</small></fieldset>
           </div>
-          <div class="form-actions"><button class="primary large" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Applying…' : `Apply ${control.mode.toUpperCase()}`}</button><button class="danger-quiet" type="button" id="max-attenuation" ${state.busy ? 'disabled' : ''}>Set maximum attenuation</button></div>
+          <div class="form-actions"><button class="primary large" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Applying…' : 'Apply'}</button></div>
         </form>
       </div>
       <aside class="live-panel"><p class="eyebrow">Live state</p><h3>${snapshot.status.mode ? snapshot.status.mode.toUpperCase() : 'Not configured'}</h3>${renderBarracudaFacts(snapshot.status)}</aside>
@@ -264,7 +241,6 @@ function renderBarracudaFacts(status: DeviceStatus): string {
     <div><dt>Frequency</dt><dd>${escapeHTML(frequency)}</dd></div>
     ${status.sweepTime ? `<div><dt>Sweep time</dt><dd>${escapeHTML(status.sweepTime)}</dd></div>` : ''}
     <div><dt>Clock</dt><dd>${escapeHTML(status.clock || 'internal')}</dd></div>
-    <div><dt>Attenuation</dt><dd>${status.attenuationDb.toFixed(2)} dB</dd></div>
     <div><dt>Nominal output</dt><dd>${status.outputEstimateAvailable ? `${status.nominalOutputDbm.toFixed(2)} dBm` : 'Unavailable'}</dd></div>
     <div><dt>Signal lock</dt><dd class="${status.signalLocked ? 'text-good' : 'text-bad'}">${status.signalLocked ? 'Locked' : 'Not locked'}</dd></div>
     ${status.referenceLockApplicable ? `<div><dt>Reference lock</dt><dd class="${status.referenceLocked ? 'text-good' : 'text-bad'}">${status.referenceLocked ? 'Locked' : 'Not locked'}</dd></div>` : ''}
@@ -348,7 +324,6 @@ function renderNetwork(snapshot: Snapshot): string {
 function renderWorkspace(snapshot: Snapshot): string {
   let body = '';
   switch (state.tab) {
-    case 'bringup': body = renderBringup(snapshot); break;
     case 'control': body = renderControl(snapshot); break;
     case 'network': body = renderNetwork(snapshot); break;
     default: body = renderStatus(snapshot);
@@ -390,21 +365,10 @@ function bindEvents(): void {
     if (address) void connectDevice({ kind: 'ethernet', address, port: 5000 });
   });
 
-  document.querySelector('#bringup-cw')?.addEventListener('click', () => void bringupCW());
-  document.querySelector('#bringup-sweep')?.addEventListener('click', () => void bringupSweep());
-  document.querySelector('#bringup-reference')?.addEventListener('click', () => void bringupReference());
-  document.querySelector('#max-attenuation')?.addEventListener('click', () => void maximumAttenuation());
-
   document.querySelector<HTMLFormElement>('#rf-form')?.addEventListener('submit', (event) => {
     event.preventDefault();
     readControlInputs();
     void applyRFControl();
-  });
-  document.querySelector<HTMLInputElement>('#attenuation')?.addEventListener('input', (event) => {
-    const value = Number((event.target as HTMLInputElement).value);
-    state.control.attenuation = value;
-    const estimate = document.querySelector('#power-estimate');
-    if (estimate && Number.isFinite(value)) estimate.textContent = `${(-25 - value).toFixed(2)} dBm`;
   });
   document.querySelectorAll<HTMLInputElement>('input[name="clock"]').forEach((input) => input.addEventListener('change', () => {
     state.control.clock = input.value as 'internal' | 'external';
@@ -424,7 +388,7 @@ function readControlInputs(): void {
     const input = document.querySelector<HTMLInputElement>(selector);
     return input ? Number(input.value) : fallback;
   };
-  state.control.attenuation = numberValue('#attenuation', state.control.attenuation);
+  state.control.outputPowerDbm = numberValue('#output-power', state.control.outputPowerDbm);
   if (state.control.mode === 'cw') {
     state.control.cwMHz = numberValue('#cw-frequency', state.control.cwMHz);
   } else {
@@ -462,6 +426,22 @@ function clearNotice(): void {
   render();
 }
 
+async function discoverWithTimeout(): Promise<DiscoveryResult> {
+  let timeoutHandle = 0;
+  try {
+    return await Promise.race([
+      Discover() as Promise<DiscoveryResult>,
+      new Promise<never>((_resolve, reject) => {
+        timeoutHandle = window.setTimeout(() => {
+          reject(new Error('Scan timed out after 5 seconds. USB control requires a COM port; a device using the WinUSB driver cannot be opened as a serial control port.'));
+        }, scanTimeoutMs);
+      }),
+    ]);
+  } finally {
+    window.clearTimeout(timeoutHandle);
+  }
+}
+
 async function discoverDevices(): Promise<void> {
   if (state.busy) return;
   state.busy = true;
@@ -471,14 +451,14 @@ async function discoverDevices(): Promise<void> {
   state.notice = '';
   render();
   try {
-    const result = await Discover() as DiscoveryResult;
+    const result = await discoverWithTimeout();
     state.discovery = result;
     const count = result.devices.length;
     const completed = new Date().toLocaleTimeString([], {
       hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
     const message = count === 0
-      ? `No devices found · scan completed at ${completed}`
+      ? `No devices found · scan completed at ${completed}. USB requires a COM port, not WinUSB.`
       : `${count} device${count === 1 ? '' : 's'} found · scan completed at ${completed}`;
     state.scanMessage = message;
     state.scanKind = count === 0 ? 'empty' : 'success';
@@ -486,7 +466,8 @@ async function discoverDevices(): Promise<void> {
     state.noticeKind = count === 0 ? 'info' : 'success';
     window.setTimeout(clearNotice, 4500);
   } catch (error) {
-    const message = `Device scan failed: ${errorText(error)}`;
+    const detail = errorText(error);
+    const message = detail.startsWith('Scan timed out') ? detail : `Device scan failed: ${detail}`;
     state.scanMessage = message;
     state.scanKind = 'error';
     state.notice = message;
@@ -503,7 +484,7 @@ async function connectDevice(endpoint: Endpoint): Promise<void> {
   const result = await withAction(`Connected over ${endpoint.kind === 'usb' ? 'USB-C' : 'Ethernet'}`, () => Connect(endpoint) as Promise<Snapshot>);
   if (!result) return;
   state.snapshot = result;
-  state.tab = result.customerControl ? 'bringup' : 'status';
+  state.tab = result.customerControl ? 'control' : 'status';
   state.networkInput = '';
   state.networkPlan = null;
   state.networkError = '';
@@ -513,7 +494,7 @@ async function connectDevice(endpoint: Endpoint): Promise<void> {
 async function disconnectDevice(): Promise<void> {
   await withAction('Device disconnected', async () => { await Disconnect(); });
   state.snapshot = null;
-  state.tab = 'bringup';
+  state.tab = 'control';
   render();
 }
 
@@ -527,7 +508,7 @@ async function refreshStatus(showNotice: boolean): Promise<void> {
       state.noticeKind = 'success';
       window.setTimeout(clearNotice, 2500);
     }
-    if (showNotice || state.tab === 'status' || state.tab === 'bringup') render();
+    if (showNotice || state.tab === 'status') render();
   } catch (error) {
     if (showNotice) {
       state.notice = errorText(error);
@@ -539,39 +520,10 @@ async function refreshStatus(showNotice: boolean): Promise<void> {
 
 async function applyRFControl(): Promise<void> {
   const control = state.control;
+  const attenuation = nominalMaximumOutputDbm - control.outputPowerDbm;
   const result = control.mode === 'cw'
-    ? await withAction('CW configuration applied', () => ConfigureCW({ frequencyMHz: control.cwMHz, attenuation: control.attenuation, clock: control.clock }) as Promise<Snapshot>)
-    : await withAction('Sweep configuration applied', () => ConfigureSweep({ startMHz: control.startMHz, stopMHz: control.stopMHz, sweepTime: control.sweepTime, attenuation: control.attenuation, clock: control.clock }) as Promise<Snapshot>);
-  if (result) state.snapshot = result;
-  render();
-}
-
-async function maximumAttenuation(): Promise<void> {
-  const result = await withAction('Maximum attenuation applied (31.75 dB)', () => SetMaximumAttenuation() as Promise<Snapshot>);
-  if (result) {
-    state.snapshot = result;
-    state.control.attenuation = 31.75;
-  }
-  render();
-}
-
-async function bringupCW(): Promise<void> {
-  const result = await withAction('CW test configured', () => ConfigureCW({ frequencyMHz: 400, attenuation: 0, clock: 'internal' }) as Promise<Snapshot>);
-  state.bringup.cw = result?.status.signalLocked ? 'pass' : 'failed';
-  if (result) state.snapshot = result;
-  render();
-}
-
-async function bringupSweep(): Promise<void> {
-  const result = await withAction('Sweep test configured', () => ConfigureSweep({ startMHz: 50, stopMHz: 1500, sweepTime: '10s', attenuation: 0, clock: 'internal' }) as Promise<Snapshot>);
-  state.bringup.sweep = result?.status.signalLocked ? 'pass' : 'failed';
-  if (result) state.snapshot = result;
-  render();
-}
-
-async function bringupReference(): Promise<void> {
-  const result = await withAction('External reference verified', () => ConfigureCW({ frequencyMHz: 400, attenuation: 0, clock: 'external' }) as Promise<Snapshot>);
-  state.bringup.reference = result?.status.referenceLocked && result.status.signalLocked ? 'pass' : 'failed';
+    ? await withAction('CW configuration applied', () => ConfigureCW({ frequencyMHz: control.cwMHz, attenuation, clock: control.clock }) as Promise<Snapshot>)
+    : await withAction('Sweep configuration applied', () => ConfigureSweep({ startMHz: control.startMHz, stopMHz: control.stopMHz, sweepTime: control.sweepTime, attenuation, clock: control.clock }) as Promise<Snapshot>);
   if (result) state.snapshot = result;
   render();
 }
