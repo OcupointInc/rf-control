@@ -32,8 +32,21 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .brand strong { font-size: 13px; }
 .brand span { margin-top: 3px; color: var(--muted); font-size: 9px; }
 .sidebar-heading { display: flex; align-items: center; justify-content: space-between; margin: 0 4px 10px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
-.icon-button { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 7px; background: transparent; cursor: pointer; }
-.icon-button:hover { border-color: var(--blue); color: var(--blue); }
+.refresh-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 76px; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; background: transparent; cursor: pointer; color: #b8c7d7; font-size: 9px; font-weight: 700; letter-spacing: .02em; text-transform: none; }
+.refresh-button:hover { border-color: var(--blue); color: var(--blue); }
+.refresh-button.scanning .refresh-icon { animation: spin .85s linear infinite; }
+.refresh-icon { display: inline-block; font-size: 14px; line-height: 1; }
+.scan-feedback { display: flex; align-items: center; gap: 7px; min-height: 31px; margin: 0 4px 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: #0b1521; color: var(--muted); font-size: 9px; line-height: 1.35; }
+.scan-feedback > span { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #61758c; }
+.scan-feedback.working { color: var(--blue); border-color: #315b78; }
+.scan-feedback.working > span { border: 1px solid var(--blue); border-top-color: transparent; background: transparent; animation: spin .85s linear infinite; }
+.scan-feedback.success { color: var(--green); border-color: #285a46; }
+.scan-feedback.success > span { background: var(--green); box-shadow: 0 0 7px rgba(88, 214, 158, .5); }
+.scan-feedback.empty { color: var(--amber); border-color: #59492c; }
+.scan-feedback.empty > span { background: var(--amber); }
+.scan-feedback.error { color: var(--red); border-color: #653940; }
+.scan-feedback.error > span { background: var(--red); }
+@keyframes spin { to { transform: rotate(360deg); } }
 .devices { flex: 1; min-height: 80px; overflow: auto; padding-right: 3px; }
 .device-card { margin-bottom: 10px; padding: 14px; background: #111d2c; border: 1px solid #22344a; border-radius: 11px; }
 .device-title { display: flex; align-items: center; gap: 10px; }

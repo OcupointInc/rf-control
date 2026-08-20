@@ -79,6 +79,9 @@ const state = {
   snapshot: null as Snapshot | null,
   tab: 'bringup' as Tab,
   busy: false,
+  scanning: false,
+  scanMessage: 'Waiting for device scan',
+  scanKind: 'idle' as 'idle' | 'working' | 'success' | 'empty' | 'error',
   notice: '' as string,
   noticeKind: 'info' as 'info' | 'success' | 'error',
   control: {
@@ -159,7 +162,8 @@ function renderSidebar(): string {
   return `
     <aside class="sidebar">
       <div class="brand"><div class="mark">O</div><div><strong>OCUPOINT</strong><span>RF CONTROL</span></div></div>
-      <div class="sidebar-heading"><span>Devices</span><button class="icon-button" id="refresh-devices" title="Refresh devices" ${state.busy ? 'disabled' : ''}>↻</button></div>
+      <div class="sidebar-heading"><span>Devices</span><button class="refresh-button ${state.scanning ? 'scanning' : ''}" id="refresh-devices" title="Refresh devices" ${state.busy ? 'disabled' : ''}><span class="refresh-icon">↻</span><span>${state.scanning ? 'Scanning…' : 'Refresh'}</span></button></div>
+      <div class="scan-feedback ${state.scanKind}" role="status" aria-live="polite"><span></span>${escapeHTML(state.scanMessage)}</div>
       <div class="devices">${devices || '<div class="empty-small">No devices discovered</div>'}</div>
       ${warnings}
       <form class="manual-connect" id="manual-connect">
@@ -178,7 +182,7 @@ function renderEmpty(): string {
       <p class="eyebrow">Hardware control</p>
       <h1>Select an RF device</h1>
       <p>Connect over USB-C for first bring-up, or select an Ethernet endpoint for normal operation.</p>
-      <button class="primary" id="empty-refresh" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Scanning…' : 'Scan for devices'}</button>
+      <button class="primary" id="empty-refresh" ${state.busy ? 'disabled' : ''}>${state.scanning ? 'Scanning USB and Ethernet…' : 'Scan for devices'}</button>
     </main>`;
 }
 
@@ -459,9 +463,40 @@ function clearNotice(): void {
 }
 
 async function discoverDevices(): Promise<void> {
-  const result = await withAction('Device scan complete', () => Discover() as Promise<DiscoveryResult>);
-  if (result) state.discovery = result;
+  if (state.busy) return;
+  state.busy = true;
+  state.scanning = true;
+  state.scanKind = 'working';
+  state.scanMessage = 'Scanning USB and Ethernet…';
+  state.notice = '';
   render();
+  try {
+    const result = await Discover() as DiscoveryResult;
+    state.discovery = result;
+    const count = result.devices.length;
+    const completed = new Date().toLocaleTimeString([], {
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const message = count === 0
+      ? `No devices found · scan completed at ${completed}`
+      : `${count} device${count === 1 ? '' : 's'} found · scan completed at ${completed}`;
+    state.scanMessage = message;
+    state.scanKind = count === 0 ? 'empty' : 'success';
+    state.notice = message;
+    state.noticeKind = count === 0 ? 'info' : 'success';
+    window.setTimeout(clearNotice, 4500);
+  } catch (error) {
+    const message = `Device scan failed: ${errorText(error)}`;
+    state.scanMessage = message;
+    state.scanKind = 'error';
+    state.notice = message;
+    state.noticeKind = 'error';
+    window.setTimeout(clearNotice, 7000);
+  } finally {
+    state.scanning = false;
+    state.busy = false;
+    render();
+  }
 }
 
 async function connectDevice(endpoint: Endpoint): Promise<void> {
