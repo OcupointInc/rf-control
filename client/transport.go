@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"go.bug.st/serial"
+	"go.bug.st/serial/enumerator"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/OcupointInc/rf-control/controlpb"
@@ -329,8 +332,24 @@ func (u *USBTransport) readFrame() ([]byte, error) {
 //	         the same physical port; cu is the callout/outgoing alias and
 //	         never blocks on DCD)
 //	Linux:   /dev/ttyACM*
-//	Windows: COM* (any — too noisy to filter further without enumeration)
+//	Windows: USB ports matching the firmware VID/PID; COM* fallback when USB
+//	         descriptor enumeration is unavailable
 func ListCandidatePorts() ([]string, error) {
+	// COM port names alone carry no useful identity on Windows. Probing every
+	// COM port can make GUI discovery take several seconds per unrelated serial
+	// device, so use USB descriptors to select only our firmware when Windows
+	// provides them. Keep the name-based path as a fallback for platforms where
+	// detailed enumeration is unavailable or incomplete.
+	if runtime.GOOS == "windows" {
+		detailed, detailedErr := enumerator.GetDetailedPortsList()
+		if detailedErr == nil {
+			matches := matchingDevicePorts(detailed)
+			if matches != nil {
+				return matches, nil
+			}
+		}
+	}
+
 	all, err := serial.GetPortsList()
 	if err != nil {
 		return nil, err
@@ -359,6 +378,34 @@ func ListCandidatePorts() ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// matchingDevicePorts returns the ports with the firmware VID/PID. A nil
+// result means the detailed enumeration did not expose USB IDs, so callers
+// should fall back to name-based filtering. An empty non-nil result means USB
+// IDs were available and no Ocupoint control device is attached.
+func matchingDevicePorts(details []*enumerator.PortDetails) []string {
+	idsAvailable := false
+	seen := make(map[string]bool)
+	ports := make([]string, 0)
+	for _, detail := range details {
+		if detail == nil || !detail.IsUSB || detail.VID == "" || detail.PID == "" {
+			continue
+		}
+		idsAvailable = true
+		if !strings.EqualFold(detail.VID, DeviceVID) || !strings.EqualFold(detail.PID, DevicePID) {
+			continue
+		}
+		if detail.Name != "" && !seen[detail.Name] {
+			seen[detail.Name] = true
+			ports = append(ports, detail.Name)
+		}
+	}
+	if !idsAvailable {
+		return nil
+	}
+	sort.Strings(ports)
+	return ports
 }
 
 // IsControlPort opens a candidate port and sends a GetConfigRequest with a
