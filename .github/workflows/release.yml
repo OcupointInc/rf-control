@@ -215,6 +215,133 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-gui-linux:
+    name: build GUI Linux/${{ matrix.goarch }}
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            runner: ubuntu-24.04
+          - goarch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            cmd/rf-control-gui/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/rf-control-gui/frontend/package-lock.json
+
+      - name: Install Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Verify frontend dependencies
+        working-directory: cmd/rf-control-gui/frontend
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run check
+
+      - name: Install pinned Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build unified Linux GUI and CLI
+        working-directory: cmd/rf-control-gui
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="latest-$(git rev-parse --short HEAD)"
+          fi
+          wails build -clean -trimpath -m -platform linux/${{ matrix.goarch }} -tags webkit2_41 -ldflags "-s -w -X github.com/OcupointInc/rf-control/internal/buildinfo.Version=${VERSION}" -o rf-control-gui-linux-${{ matrix.goarch }}
+          test "$(./build/bin/rf-control-gui-linux-${{ matrix.goarch }} version)" = "${VERSION}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rf-control-gui-linux-${{ matrix.goarch }}
+          path: cmd/rf-control-gui/build/bin/rf-control-gui-linux-${{ matrix.goarch }}
+          if-no-files-found: error
+          retention-days: 7
+
+  build-gui-macos:
+    name: build GUI macOS/${{ matrix.goarch }}
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            runner: macos-15-intel
+          - goarch: arm64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            cmd/rf-control-gui/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/rf-control-gui/frontend/package-lock.json
+
+      - name: Verify frontend dependencies
+        working-directory: cmd/rf-control-gui/frontend
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run check
+
+      - name: Install pinned Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build and package unified macOS GUI and CLI
+        working-directory: cmd/rf-control-gui
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="latest-$(git rev-parse --short HEAD)"
+          fi
+          EXECUTABLE="rf-control-gui-darwin-${{ matrix.goarch }}"
+          wails build -clean -trimpath -m -platform darwin/${{ matrix.goarch }} -ldflags "-s -w -X github.com/OcupointInc/rf-control/internal/buildinfo.Version=${VERSION}" -o "${EXECUTABLE}"
+          BUNDLE="build/bin/rf-control.app"
+          ACTUAL_VERSION="$("${BUNDLE}/Contents/MacOS/${EXECUTABLE}" version)"
+          test "${ACTUAL_VERSION}" = "${VERSION}"
+          mv "${BUNDLE}" "build/bin/Ocupoint RF Control.app"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "build/bin/Ocupoint RF Control.app" "dist/rf-control-gui-darwin-${{ matrix.goarch }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rf-control-gui-darwin-${{ matrix.goarch }}
+          path: cmd/rf-control-gui/dist/rf-control-gui-darwin-${{ matrix.goarch }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
   # Every push to main republishes a single rolling "latest" prerelease, so the
   # download URL never changes. The old release AND its tag are deleted first:
   # gh will not move an existing tag, so without --cleanup-tag the `latest` tag
@@ -222,7 +349,7 @@ jobs:
   # whatever commit first created it.
   release-latest:
     name: publish rolling latest
-    needs: [build, build-gui-rhel8, build-gui-windows]
+    needs: [build, build-gui-rhel8, build-gui-windows, build-gui-linux, build-gui-macos]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -262,7 +389,7 @@ jobs:
 
   release-tag:
     name: publish tagged release
-    needs: [build, build-gui-rhel8, build-gui-windows]
+    needs: [build, build-gui-rhel8, build-gui-windows, build-gui-linux, build-gui-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

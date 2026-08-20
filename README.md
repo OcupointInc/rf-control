@@ -12,23 +12,34 @@ and download the file for your computer:
 | --- | --- | --- |
 | Windows x86-64 | [`rf-control-windows-amd64.exe`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-windows-amd64.exe) | Desktop GUI and CLI |
 | RHEL 8 x86-64 | [`rf-control-gui-0.1.0-1.el8.x86_64.rpm`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-gui-0.1.0-1.el8.x86_64.rpm) | Desktop GUI |
-| Linux x86-64 | [`rf-control-linux-amd64`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-linux-amd64) | CLI |
-| Linux ARM64 | [`rf-control-linux-arm64`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-linux-arm64) | CLI |
-| macOS Intel | [`rf-control-darwin-amd64`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-darwin-amd64) | CLI |
-| macOS Apple silicon | [`rf-control-darwin-arm64`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-darwin-arm64) | CLI |
+| Linux x86-64 | [`rf-control-gui-linux-amd64`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-gui-linux-amd64) | Desktop GUI and CLI |
+| Linux ARM64 | [`rf-control-gui-linux-arm64`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-gui-linux-arm64) | Desktop GUI and CLI |
+| macOS Intel | [`rf-control-gui-darwin-amd64.zip`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-gui-darwin-amd64.zip) | Desktop GUI and CLI |
+| macOS Apple silicon | [`rf-control-gui-darwin-arm64.zip`](https://github.com/OcupointInc/rf-control/releases/download/latest/rf-control-gui-darwin-arm64.zip) | Desktop GUI and CLI |
 
-The desktop GUI is currently published for Windows and RHEL 8. The macOS and
-general Linux downloads provide the same command-line control used for external
-automation.
-
-On Linux or macOS, make a downloaded command-line file executable once before
-running it, for example: `chmod +x rf-control-linux-amd64`.
+The release also includes small CLI-only files for headless systems. The GUI
+downloads above are unified: opening one without arguments launches the GUI,
+while passing arguments runs its command-line mode.
 
 To open the GUI on Windows, double-click
 `rf-control-windows-amd64.exe`. If Windows SmartScreen appears the first time,
 select **More info**, then **Run anyway**.
 
 On RHEL 8, open **Ocupoint RF Control** after installing the downloaded RPM.
+
+On Linux, make the downloaded file executable and open it:
+
+```bash
+chmod +x rf-control-gui-linux-amd64
+./rf-control-gui-linux-amd64
+```
+
+The Linux GUI uses the system GTK3 and WebKit2GTK 4.1 runtime libraries. Install
+those packages through the Linux distribution if they are not already present.
+
+On macOS, extract the downloaded ZIP and open **Ocupoint RF Control.app**. If
+Gatekeeper blocks the unsigned download the first time, right-click the app,
+select **Open**, then confirm.
 
 ## 2. Connect over USB-C or Ethernet
 
@@ -104,28 +115,36 @@ Use the device's known Ethernet address on any operating system:
 .\rf-control-windows-amd64.exe --ip 192.168.50.25 apply .\rf-profile.json
 ```
 
+**RHEL 8 x86-64**
+
+```bash
+rf-control-gui --ip 192.168.50.25 apply ./rf-profile.json
+```
+
 **Linux x86-64**
 
 ```bash
-./rf-control-linux-amd64 --ip 192.168.50.25 apply ./rf-profile.json
+./rf-control-gui-linux-amd64 --ip 192.168.50.25 apply ./rf-profile.json
 ```
 
 **Linux ARM64**
 
 ```bash
-./rf-control-linux-arm64 --ip 192.168.50.25 apply ./rf-profile.json
+./rf-control-gui-linux-arm64 --ip 192.168.50.25 apply ./rf-profile.json
 ```
 
 **macOS Intel**
 
 ```bash
-./rf-control-darwin-amd64 --ip 192.168.50.25 apply ./rf-profile.json
+"./Ocupoint RF Control.app/Contents/MacOS/rf-control-gui-darwin-amd64" \
+  --ip 192.168.50.25 apply ./rf-profile.json
 ```
 
 **macOS Apple silicon**
 
 ```bash
-./rf-control-darwin-arm64 --ip 192.168.50.25 apply ./rf-profile.json
+"./Ocupoint RF Control.app/Contents/MacOS/rf-control-gui-darwin-arm64" \
+  --ip 192.168.50.25 apply ./rf-profile.json
 ```
 
 USB works the same way by replacing `--ip ADDRESS` with the USB serial port:
@@ -137,5 +156,4 @@ macOS:    --usb /dev/cu.usbmodem101
 ```
 
 External software can run the appropriate command whenever it needs to change
-the hardware configuration. On Windows, launching the executable with no
-arguments opens the GUI; passing arguments runs it as a CLI.
+the hardware configuration.

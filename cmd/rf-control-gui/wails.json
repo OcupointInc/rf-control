@@ -8,5 +8,12 @@
   "frontend:dev:serverUrl": "auto",
   "author": {
     "name": "Ocupoint"
+  },
+  "info": {
+    "companyName": "Ocupoint",
+    "productName": "Ocupoint RF Control",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © 2026 Ocupoint",
+    "comments": "Ocupoint RF hardware control"
   }
 }
