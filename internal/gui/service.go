@@ -6,6 +6,7 @@ package gui
 import (
 	"fmt"
 	"net"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -153,16 +154,26 @@ type Service struct {
 	open             func(Endpoint) (deviceClient, error)
 	listUSB          func() ([]string, error)
 	discoverEthernet func(time.Duration) ([]*pb.DiscoveryResponse, error)
+	probeUSB         bool
 	scanTimeout      time.Duration
 }
 
 func NewService() *Service {
-	return &Service{
+	service := &Service{
 		open:             openDevice,
 		listUSB:          client.ListCandidatePorts,
 		discoverEthernet: client.DiscoverEthernet,
+		probeUSB:         true,
 		scanTimeout:      defaultScanTimeout,
 	}
+	if runtime.GOOS == "windows" {
+		// Registry-based COM enumeration is quick and reliable. Do not open and
+		// interrogate every port during discovery; identify the device after the
+		// user selects its COM endpoint instead.
+		service.listUSB = client.ListSerialPorts
+		service.probeUSB = false
+	}
+	return service
 }
 
 func openDevice(endpoint Endpoint) (deviceClient, error) {
@@ -287,6 +298,12 @@ func (s *Service) discover() DiscoveryResult {
 				continue
 			}
 			endpoint := Endpoint{Kind: "usb", Address: port}
+			if !s.probeUSB {
+				add(DiscoveredDevice{
+					Name: "USB serial device", Connections: []Endpoint{endpoint},
+				})
+				continue
+			}
 			dev, err := s.open(endpoint)
 			if err != nil {
 				continue

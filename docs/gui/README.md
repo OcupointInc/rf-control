@@ -63,6 +63,8 @@ driver for that interface.
 2. Enter the known address under **Connect directly** (`COM5` or an IPv4
    address), or explicitly scan for USB and Ethernet devices. A scan is bounded
    by a five-second timeout in both the GUI and native backend.
+   On Windows, scanning lists COM ports immediately without opening them; click
+   the appropriate USB serial entry to identify and connect to the device.
 3. Select the Barracuda endpoint; the application opens directly on **RF
    Control**.
 4. Configure CW or sweep, desired output power, and the clock source, then

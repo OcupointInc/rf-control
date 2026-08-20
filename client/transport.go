@@ -383,6 +383,19 @@ type usbPortDetails struct {
 	pid   string
 }
 
+// ListSerialPorts returns every serial-port name reported by the host in a
+// stable order. GUI discovery uses this lightweight registry-backed path on
+// Windows so a problematic USB descriptor or protocol probe cannot hold the
+// device list open indefinitely.
+func ListSerialPorts() ([]string, error) {
+	ports, err := serial.GetPortsList()
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(ports)
+	return ports, nil
+}
+
 func matchingDevicePorts(details []usbPortDetails) []string {
 	idsAvailable := false
 	seen := make(map[string]bool)

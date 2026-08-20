@@ -184,6 +184,26 @@ func TestDiscoverReturnsAtBackendDeadline(t *testing.T) {
 	close(release)
 }
 
+func TestDiscoverCanListUSBWithoutOpeningPorts(t *testing.T) {
+	service := serviceWithFake(barracudaFake())
+	service.probeUSB = false
+	service.listUSB = func() ([]string, error) { return []string{"COM5"}, nil }
+	service.open = func(Endpoint) (deviceClient, error) {
+		t.Fatal("discovery opened a COM candidate")
+		return nil, nil
+	}
+
+	result := service.Discover()
+	if result.TimedOut || len(result.Devices) != 1 {
+		t.Fatalf("discovery = %+v", result)
+	}
+	device := result.Devices[0]
+	if device.Name != "USB serial device" || len(device.Connections) != 1 ||
+		device.Connections[0] != (Endpoint{Kind: "usb", Address: "COM5"}) {
+		t.Fatalf("COM candidate = %+v", device)
+	}
+}
+
 func TestBarracudaCWUsesCustomerPlanAndHidesEngineeringState(t *testing.T) {
 	fake := barracudaFake()
 	service := serviceWithFake(fake)
