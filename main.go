@@ -162,24 +162,10 @@ func ipString(b []byte) string {
 // deriveCustomerNetwork turns the single customer-facing IP input into the
 // standard lab network plan: a /24 subnet with the gateway at host .1.
 func deriveCustomerNetwork(address string) (ip, gateway, subnet []byte, err error) {
-	ip, err = parseIPv4(address)
+	ip, gateway, subnet, err = client.DeriveCustomerNetwork(address)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, usagef("%v", err)
 	}
-	if ip[0] == 0 || ip[0] == 127 || ip[0] >= 224 {
-		return nil, nil, nil, usagef("customer IP must be a unicast address (got %q)", address)
-	}
-	switch ip[3] {
-	case 0:
-		return nil, nil, nil, usagef("customer IP %q is the derived /24 network address; choose host .2 through .254", address)
-	case 1:
-		return nil, nil, nil, usagef("customer IP %q conflicts with the derived .1 gateway; choose host .2 through .254", address)
-	case 255:
-		return nil, nil, nil, usagef("customer IP %q is the derived /24 broadcast address; choose host .2 through .254", address)
-	}
-	gateway = append([]byte(nil), ip...)
-	gateway[3] = 1
-	subnet = []byte{255, 255, 255, 0}
 	return ip, gateway, subnet, nil
 }
 

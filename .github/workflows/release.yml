@@ -92,6 +92,78 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-gui-rhel8:
+    name: build GUI RHEL 8/amd64
+    needs: test
+    runs-on: ubuntu-latest
+    container: rockylinux:8
+    steps:
+      - name: Install RHEL 8 build dependencies
+        run: >-
+          dnf install -y git tar gzip findutils gcc gcc-c++
+          pkgconf-pkg-config gtk3-devel webkit2gtk3-devel rpm-build
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            cmd/rf-control-gui/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/rf-control-gui/frontend/package-lock.json
+
+      - name: Verify frontend dependencies
+        working-directory: cmd/rf-control-gui/frontend
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run check
+
+      - name: Install pinned Wails CLI
+        env:
+          GOBIN: /usr/local/bin
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build RHEL 8 GUI
+        working-directory: cmd/rf-control-gui
+        run: >-
+          wails build -clean -trimpath -m -tags webkit2_40
+          -o rf-control-gui-linux-amd64
+
+      - name: Package executable and RPM
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -C cmd/rf-control-gui/build/bin -czf \
+            dist/rf-control-gui-rhel8-amd64.tar.gz \
+            rf-control-gui-linux-amd64
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            APP_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            APP_VERSION="0.1.0"
+          fi
+          RPM_TOP="${RUNNER_TEMP}/rf-control-rpmbuild"
+          mkdir -p "${RPM_TOP}"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+          rpmbuild -bb packaging/rhel/rf-control-gui.spec \
+            --define "app_version ${APP_VERSION}" \
+            --define "_topdir ${RPM_TOP}" \
+            --define "_sourcedir ${GITHUB_WORKSPACE}"
+          find "${RPM_TOP}/RPMS" -name '*.rpm' -exec cp {} dist/ \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rf-control-gui-rhel8-amd64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   # Every push to main republishes a single rolling "latest" prerelease, so the
   # download URL never changes. The old release AND its tag are deleted first:
   # gh will not move an existing tag, so without --cleanup-tag the `latest` tag
@@ -99,7 +171,7 @@ jobs:
   # whatever commit first created it.
   release-latest:
     name: publish rolling latest
-    needs: build
+    needs: [build, build-gui-rhel8]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -111,7 +183,10 @@ jobs:
           merge-multiple: true
 
       - name: List artifacts
-        run: ls -la dist/
+        run: |
+          ls -la dist/
+          cd dist
+          sha256sum * > SHA256SUMS
 
       - name: Recreate rolling latest release
         env:
@@ -136,7 +211,7 @@ jobs:
 
   release-tag:
     name: publish tagged release
-    needs: build
+    needs: [build, build-gui-rhel8]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -146,7 +221,10 @@ jobs:
           merge-multiple: true
 
       - name: List artifacts
-        run: ls -la dist/
+        run: |
+          ls -la dist/
+          cd dist
+          sha256sum * > SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:

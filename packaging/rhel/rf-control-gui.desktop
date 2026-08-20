@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ocupoint RF Control
+Comment=Control Ocupoint RF hardware over USB-C or Ethernet
+Exec=rf-control-gui
+Icon=network-wired
+Terminal=false
+Categories=Utility;Science;Engineering;
+StartupNotify=true

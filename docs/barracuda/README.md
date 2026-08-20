@@ -5,6 +5,12 @@ control over Ethernet. Normal customer operation consists of CW and continuous
 sweep. All frequencies entered and reported by `rf-control` are the 50–1500 MHz
 IF; the software handles the internal frequency conversion automatically.
 
+On the supplied RHEL 8 workstation, launch **Ocupoint RF Control** to perform
+these steps through the guided desktop interface. The GUI discovers the same
+USB-C and Ethernet devices and provides **First Bring-Up**, **RF Control**,
+**Status**, and **Network** tabs. The commands below are the complete CLI
+fallback and use the same underlying device-control code.
+
 ## What you need
 
 - Barracuda and its 12 V power supply

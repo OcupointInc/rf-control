@@ -1,12 +1,12 @@
 # rf-control
 
-Single-binary CLI for configuring Ocupoint Ethernet-controlled RF
-frontends (Barracuda, Black Canyon, Straps, Whalepod). Talks to the device over
-either TCP (default port 5000) or the USB control channel on the
-second CDC interface — useful when the network side isn't reachable
-yet (fresh board, wrong static IP, no DHCP).
+Single-binary CLI and optional desktop GUI for configuring Ocupoint
+Ethernet-controlled RF frontends (Barracuda, Black Canyon, Straps, Whalepod).
+Talks to the device over either TCP (default port 5000) or the USB control
+channel on the second CDC interface — useful when the network side isn't
+reachable yet (fresh board, wrong static IP, no DHCP).
 
-No runtime dependencies. Download the binary for your platform from
+The CLI has no runtime dependencies. Download the binary for your platform from
 the GitHub Releases page and run it. Prefer to drive a device from your
 own Go program instead? See
 [Using rf-control as a Go library](#using-rf-control-as-a-go-library).
@@ -58,6 +58,28 @@ own Go program instead? See
    ```bash
    rf-control help
    ```
+
+### RHEL 8 desktop GUI
+
+The same release includes an optional Wails desktop application specifically
+built for RHEL 8 x86-64:
+
+- `rf-control-gui-0.1.0-1.el8.x86_64.rpm` installs the application and declares
+  the required GTK3/WebKit2GTK dependencies.
+- `rf-control-gui-rhel8-amd64.tar.gz` contains the raw GUI executable.
+- `rf-control-linux-amd64` remains the dependency-free CLI fallback.
+
+Install and launch the RPM with:
+
+```bash
+sudo dnf install ./rf-control-gui-0.1.0-1.el8.x86_64.rpm
+rf-control-gui
+```
+
+The GUI operates locally, embeds its frontend, uses no telemetry or remote web
+assets, and does not open an externally accessible web server. See the
+[desktop GUI guide](docs/gui/README.md) for installation, USB permissions,
+workflow, and RHEL 8 build details.
 
 ---
 
@@ -166,6 +188,10 @@ available for engineering and service work through
 operation. The normal `rf-control help` output shows only the customer surface.
 See the one-page [Barracuda customer guide](docs/barracuda/README.md) for the
 handoff instructions.
+
+The desktop GUI presents the same safe operations as forms and includes a
+guided first-bring-up workflow. It calls the shared Go client directly; the CLI
+does not need to be running and remains available as an independent fallback.
 
 ---
 
@@ -683,6 +709,7 @@ that walks through a calibration measurement on a Whalepod board.
 ## Hardware setup guides
 
 - [Barracuda customer control](docs/barracuda/README.md)
+- [Desktop GUI for RHEL 8](docs/gui/README.md)
 - [Whalepod eval board](docs/whalepod/README.md)
 - [Reflashing the eval board firmware](docs/firmware/README.md) —
   shared procedure across all devices; `.uf2` files live in
