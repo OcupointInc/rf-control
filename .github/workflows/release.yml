@@ -131,7 +131,7 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             VERSION="${GITHUB_REF_NAME}"
           else
-            VERSION="latest-$(git rev-parse --short HEAD)"
+            VERSION="latest-$(printf '%.7s' "${GITHUB_SHA}")"
           fi
           wails build -clean -trimpath -m -tags webkit2_40 \
             -ldflags "-s -w -X github.com/OcupointInc/rf-control/internal/buildinfo.Version=${VERSION}" \
