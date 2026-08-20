@@ -1,8 +1,7 @@
 # Ocupoint RF Control
 
 Ocupoint RF Control discovers, configures, and monitors supported Ocupoint
-hardware over USB-C or Ethernet. Download a ready-to-run file from GitHub; no
-source code or build tools are required.
+hardware over USB-C or Ethernet. Download a ready-to-run file from GitHub.
 
 ## 1. Download the application
 
@@ -33,14 +32,14 @@ On RHEL 8, open **Ocupoint RF Control** after installing the downloaded RPM.
 
 ## 2. Connect over USB-C or Ethernet
 
-1. Power on the complete Ocupoint system.
+1. Power on the hardware.
 2. Open the Ocupoint RF Control GUI.
 3. Connect using either method:
    - **USB-C:** Connect the system's USB-C control port to the computer, select
      **Scan for devices**, then select **Connect** beside its USB connection.
    - **Ethernet:** If the device IP address is already known, enter it under
      **Connect directly**. You can also select **Scan for devices** and connect
-     to its Ethernet entry.
+     to its Ethernet entry if you are on the same subnet as the device.
 4. Confirm that the device shows as connected.
 
 A USB connection includes its serial port in the description, such as
