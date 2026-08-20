@@ -52,12 +52,6 @@ jobs:
           - goos: darwin
             goarch: arm64
             asset: rf-control-darwin-arm64
-          - goos: windows
-            goarch: amd64
-            asset: rf-control-windows-amd64.exe
-          - goos: windows
-            goarch: arm64
-            asset: rf-control-windows-arm64.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -82,7 +76,7 @@ jobs:
             VERSION="latest-$(git rev-parse --short HEAD)"
           fi
           echo "building ${{ matrix.asset }} version=${VERSION}"
-          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+          go build -trimpath -ldflags "-s -w -X github.com/OcupointInc/rf-control/internal/buildinfo.Version=${VERSION}" \
             -o "dist/${{ matrix.asset }}" .
 
       - uses: actions/upload-artifact@v4
@@ -133,9 +127,15 @@ jobs:
 
       - name: Build RHEL 8 GUI
         working-directory: cmd/rf-control-gui
-        run: >-
-          wails build -clean -trimpath -m -tags webkit2_40
-          -o rf-control-gui-linux-amd64
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="latest-$(git rev-parse --short HEAD)"
+          fi
+          wails build -clean -trimpath -m -tags webkit2_40 \
+            -ldflags "-s -w -X github.com/OcupointInc/rf-control/internal/buildinfo.Version=${VERSION}" \
+            -o rf-control-gui-linux-amd64
 
       - name: Package executable and RPM
         run: |
@@ -164,6 +164,57 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-gui-windows:
+    name: build GUI Windows/amd64
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            cmd/rf-control-gui/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/rf-control-gui/frontend/package-lock.json
+
+      - name: Verify frontend dependencies
+        working-directory: cmd/rf-control-gui/frontend
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run check
+
+      - name: Install pinned Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build unified Windows GUI and CLI
+        working-directory: cmd/rf-control-gui
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="latest-$(git rev-parse --short HEAD)"
+          fi
+          wails build -clean -windowsconsole -trimpath -m \
+            -ldflags "-s -w -X github.com/OcupointInc/rf-control/internal/buildinfo.Version=${VERSION}" \
+            -o rf-control-windows-amd64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rf-control-windows-amd64.exe
+          path: cmd/rf-control-gui/build/bin/rf-control-windows-amd64.exe
+          if-no-files-found: error
+          retention-days: 7
+
   # Every push to main republishes a single rolling "latest" prerelease, so the
   # download URL never changes. The old release AND its tag are deleted first:
   # gh will not move an existing tag, so without --cleanup-tag the `latest` tag
@@ -171,7 +222,7 @@ jobs:
   # whatever commit first created it.
   release-latest:
     name: publish rolling latest
-    needs: [build, build-gui-rhel8]
+    needs: [build, build-gui-rhel8, build-gui-windows]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -211,7 +262,7 @@ jobs:
 
   release-tag:
     name: publish tagged release
-    needs: [build, build-gui-rhel8]
+    needs: [build, build-gui-rhel8, build-gui-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

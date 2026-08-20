@@ -1,7 +1,7 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "rf-control-gui",
-  "outputfilename": "rf-control-gui",
+  "name": "rf-control",
+  "outputfilename": "rf-control",
   "frontend:install": "npm ci",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",

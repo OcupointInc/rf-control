@@ -1,6 +1,7 @@
-package main
+package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -12,6 +13,20 @@ import (
 	"github.com/OcupointInc/rf-control/client"
 	pb "github.com/OcupointInc/rf-control/controlpb"
 )
+
+func TestGUIProfileJSONIsAcceptedByApply(t *testing.T) {
+	raw := []byte(`{"barracuda":{"mode":"cw","if_frequency_mhz":400,"attenuation_db":6.25,"clock":"internal","rf_enabled":false}}`)
+	var config batchConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if config.Barracuda == nil || config.Barracuda.RFEnabled == nil || *config.Barracuda.RFEnabled {
+		t.Fatalf("rf_enabled was not decoded as false: %+v", config.Barracuda)
+	}
+}
 
 func TestParseCustomerCW(t *testing.T) {
 	common, cfg, err := parseCustomerCW([]string{

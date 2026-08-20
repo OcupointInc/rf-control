@@ -1,7 +1,9 @@
 # rf-control
 
-Single-binary CLI and optional desktop GUI for configuring Ocupoint
-Ethernet-controlled RF frontends (Barracuda, Black Canyon, Straps, Whalepod).
+Desktop GUI and standalone CLI for configuring Ocupoint Ethernet-controlled RF
+frontends (Barracuda, Black Canyon, Straps, Whalepod). On Windows, both modes
+are included in the same executable: double-click it to open the GUI or pass it
+command-line arguments for scripts and automated test setups.
 Talks to the device over either TCP (default port 5000) or the USB control
 channel on the second CDC interface — useful when the network side isn't
 reachable yet (fresh board, wrong static IP, no DHCP).
@@ -27,7 +29,6 @@ own Go program instead? See
    | macOS Intel            | `rf-control-darwin-amd64`       |
    | macOS Apple Silicon    | `rf-control-darwin-arm64`       |
    | Windows x86_64         | `rf-control-windows-amd64.exe`  |
-   | Windows ARM64          | `rf-control-windows-arm64.exe`  |
 
    The `.uf2` firmware images for each eval board are tracked in
    [`firmware/`](firmware/) — see
@@ -49,15 +50,49 @@ own Go program instead? See
    or run `xattr -d com.apple.quarantine rf-control-*` from a
    terminal.
 
-   **Windows** — rename the download to `rf-control.exe` and run it
-   from PowerShell or `cmd`. SmartScreen may warn the first time;
+   **Windows GUI** — double-click `rf-control-windows-amd64.exe`. No installer
+   or second executable is required. SmartScreen may warn the first time;
    click **More info → Run anyway**.
 
-4. Sanity check:
+   **Windows standalone/CLI use** — open PowerShell in the download folder and
+   pass arguments to the same file:
+
+   ```powershell
+   .\rf-control-windows-amd64.exe help
+   .\rf-control-windows-amd64.exe --usb COM5 status
+   ```
+
+4. Sanity check on Linux or macOS:
 
    ```bash
    rf-control help
    ```
+
+### Windows GUI and standalone mode
+
+The Windows download is one dual-mode binary. With no arguments it opens the
+Ocupoint RF Control GUI, where you can discover or directly connect to a COM
+port, configure CW or sweep operation, change the pending RF state, and press
+**Apply** to tune the hardware.
+
+Use **Export** to save the settings currently shown as a CLI-compatible JSON
+profile. Use **Load** to restore a profile into the GUI; loading does not change
+the hardware until **Apply** is pressed. A saved profile can also be applied
+without opening the GUI:
+
+```powershell
+.\rf-control-windows-amd64.exe --usb COM5 apply .\barracuda-cw-400mhz.json
+```
+
+Ethernet works the same way with `--ip ADDRESS` instead of `--usb COM5`. Run
+`version` to print the same build identifier shown at the bottom of the GUI:
+
+```powershell
+.\rf-control-windows-amd64.exe version
+```
+
+See the [desktop GUI guide](docs/gui/README.md) for the complete workflow,
+Windows USB driver notes, register export, and network configuration.
 
 ### RHEL 8 desktop GUI
 
@@ -189,10 +224,6 @@ operation. The normal `rf-control help` output shows only the customer surface.
 See the one-page [Barracuda customer guide](docs/barracuda/README.md) for the
 handoff instructions.
 
-The desktop GUI presents the same safe operations as a streamlined RF Control
-screen. It calls the shared Go client directly; the CLI does not need to be
-running and remains available as an independent fallback.
-
 ---
 
 ## All commands
@@ -229,6 +260,8 @@ gpio-selftest          Run the control-GPIO diagnostic (alias: selftest);
 
 Barracuda RF module (other boards answer "unsupported", exit code 4):
 set-lo <MHz>           Tune the LMX2595 LO (0 powers it down)
+read-lmx [REGISTERS]   Read R0..R112 without changing hardware; accepts ranges
+                       such as 0-15,44,R75 and supports --json
 set-dsa <dB>           HMC1119 attenuation, 0-31.75 dB in 0.25 dB steps
 set-chirp [flags]      Program/arm the ADF4159 FMCW ramp
 set-fsk [flags]        ADF4159 FSK around a center frequency
@@ -500,7 +533,8 @@ The Barracuda customer interface is available as one nested object. CW:
     "mode": "cw",
     "if_frequency_mhz": 400,
     "attenuation_db": 0,
-    "clock": "internal"
+    "clock": "internal",
+    "rf_enabled": true
   }
 }
 ```
@@ -515,7 +549,8 @@ Continuous sweep:
     "stop_if_mhz": 1500,
     "sweep_time": "10s",
     "attenuation_db": 0,
-    "clock": "external"
+    "clock": "external",
+    "rf_enabled": false
   }
 }
 ```
@@ -592,6 +627,9 @@ All fields are optional; only the ones you include are touched.
 | `network`             | object        | `static_ip`, `static_gateway`, `static_subnet`, `hostname`     |
 
 Notes:
+
+- A Barracuda block may include `rf_enabled`. The GUI always writes it so a
+  saved profile restores both the tuning plan and the intended RF ON/OFF state.
 
 - Fields are applied in a fixed, dependency-safe order regardless of key order
   in the JSON: band preset → switches → PLL → attenuators → channels → cal

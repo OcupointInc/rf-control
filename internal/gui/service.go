@@ -5,8 +5,8 @@ package gui
 
 import (
 	"fmt"
+	"math"
 	"net"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +19,8 @@ import (
 const (
 	defaultControlPort = 5000
 	defaultScanTimeout = 5 * time.Second
+	lmxRegisterCount   = 113
+	lmxRegisterBatch   = 16
 )
 
 // Endpoint identifies one way to reach a device.
@@ -73,6 +75,7 @@ type DeviceStatus struct {
 	SignalLocked            bool    `json:"signalLocked"`
 	AttenuationDB           float64 `json:"attenuationDb"`
 	MaximumAttenuation      bool    `json:"maximumAttenuation"`
+	RFEnabled               bool    `json:"rfEnabled"`
 	OutputEstimateAvailable bool    `json:"outputEstimateAvailable"`
 	NominalOutputDBm        float64 `json:"nominalOutputDbm"`
 	TemperatureAvailable    bool    `json:"temperatureAvailable"`
@@ -101,6 +104,7 @@ type CWRequest struct {
 	FrequencyMHz int32   `json:"frequencyMHz"`
 	Attenuation  float64 `json:"attenuation"`
 	Clock        string  `json:"clock"`
+	RFEnabled    bool    `json:"rfEnabled"`
 }
 
 type SweepRequest struct {
@@ -109,6 +113,57 @@ type SweepRequest struct {
 	SweepTime   string  `json:"sweepTime"`
 	Attenuation float64 `json:"attenuation"`
 	Clock       string  `json:"clock"`
+	RFEnabled   bool    `json:"rfEnabled"`
+}
+
+// TuningProfile is intentionally identical to the CLI `apply` command's
+// customer-facing Barracuda JSON block, so a file saved in the GUI can be used
+// later by either the GUI or this same executable in CLI mode.
+type TuningProfile struct {
+	Barracuda *BarracudaTuningProfile `json:"barracuda"`
+}
+
+type BarracudaTuningProfile struct {
+	Mode           string  `json:"mode"`
+	IFFrequencyMHz int32   `json:"if_frequency_mhz,omitempty"`
+	StartIFMHz     int32   `json:"start_if_mhz,omitempty"`
+	StopIFMHz      int32   `json:"stop_if_mhz,omitempty"`
+	SweepTime      string  `json:"sweep_time,omitempty"`
+	AttenuationDB  float64 `json:"attenuation_db"`
+	Clock          string  `json:"clock"`
+	RFEnabled      bool    `json:"rf_enabled"`
+}
+
+func ValidateTuningProfile(profile TuningProfile) error {
+	config := profile.Barracuda
+	if config == nil {
+		return fmt.Errorf("tuning profile is missing the barracuda block")
+	}
+	config.Mode = strings.ToLower(strings.TrimSpace(config.Mode))
+	if _, err := externalClock(config.Clock); err != nil {
+		return err
+	}
+	if config.AttenuationDB < 0 || config.AttenuationDB > client.BarracudaMaxAttenuationDB ||
+		math.Abs(config.AttenuationDB*4-math.Round(config.AttenuationDB*4)) > 0.000001 {
+		return fmt.Errorf("attenuation must be 0–31.75 dB in 0.25 dB steps")
+	}
+	switch config.Mode {
+	case "cw":
+		if config.IFFrequencyMHz < 50 || config.IFFrequencyMHz > 1500 {
+			return fmt.Errorf("CW IF frequency must be 50–1500 MHz")
+		}
+	case "sweep":
+		if config.StartIFMHz < 50 || config.StopIFMHz > 1500 || config.StopIFMHz <= config.StartIFMHz {
+			return fmt.Errorf("sweep must be an ascending range within 50–1500 MHz")
+		}
+		duration, err := time.ParseDuration(strings.TrimSpace(config.SweepTime))
+		if err != nil || duration <= 0 {
+			return fmt.Errorf("invalid sweep time %q: include a positive unit such as 10s, 20ms, or 35us", config.SweepTime)
+		}
+	default:
+		return fmt.Errorf("unsupported tuning mode %q (expected cw or sweep)", config.Mode)
+	}
+	return nil
 }
 
 type NetworkPlan struct {
@@ -122,6 +177,17 @@ type NetworkChangeResult struct {
 	Rebooting bool        `json:"rebooting"`
 }
 
+// LMXRegister is one live 16-bit LMX2595 register readback. Address is kept as
+// a number so callers can export it as JSON, CSV, or the CLI's R<n> notation.
+type LMXRegister struct {
+	Address uint32 `json:"address"`
+	Value   uint32 `json:"value"`
+}
+
+type LMXRegisterReadResult struct {
+	Registers []LMXRegister `json:"registers"`
+}
+
 type deviceClient interface {
 	Close() error
 	GetConfig() (*pb.GetConfigResponse, error)
@@ -130,6 +196,9 @@ type deviceClient interface {
 	ConfigureBarracudaCW(client.BarracudaCWConfig) (*client.BarracudaConfiguration, error)
 	ConfigureBarracudaSweep(client.BarracudaSweepConfig) (*client.BarracudaConfiguration, error)
 	SetDsaAttenuation(int32) error
+	SetLoFrequency(int32) error
+	SetLMXOutputPower(uint32) error
+	ReadLMX2595Registers([]uint32) (*pb.Lmx2595RegisterReadResponse, error)
 }
 
 type session struct {
@@ -159,21 +228,13 @@ type Service struct {
 }
 
 func NewService() *Service {
-	service := &Service{
+	return &Service{
 		open:             openDevice,
 		listUSB:          client.ListCandidatePorts,
 		discoverEthernet: client.DiscoverEthernet,
 		probeUSB:         true,
 		scanTimeout:      defaultScanTimeout,
 	}
-	if runtime.GOOS == "windows" {
-		// Registry-based COM enumeration is quick and reliable. Do not open and
-		// interrogate every port during discovery; identify the device after the
-		// user selects its COM endpoint instead.
-		service.listUSB = client.ListSerialPorts
-		service.probeUSB = false
-	}
-	return service
 }
 
 func openDevice(endpoint Endpoint) (deviceClient, error) {
@@ -223,6 +284,7 @@ func (s *Service) Discover() DiscoveryResult {
 		return result
 	case <-timer.C:
 		return DiscoveryResult{
+			Devices:  []DiscoveredDevice{},
 			Warnings: []string{"Device scan timed out after 5 seconds. You can connect directly using its COM port or IP address."},
 			TimedOut: true,
 		}
@@ -247,7 +309,7 @@ func (s *Service) discover() DiscoveryResult {
 	s.mu.Unlock()
 
 	byID := make(map[string]*DiscoveredDevice)
-	var warnings []string
+	warnings := make([]string, 0)
 	add := func(device DiscoveredDevice) {
 		key := deviceKey(device.Serial, device.MACAddress, device.IPAddress, device.Connections[0])
 		for existingKey, existing := range byID {
@@ -436,6 +498,9 @@ func (s *Service) ConfigureCW(request CWRequest) (DeviceSnapshot, error) {
 	s.active.lastStop = result.StopIFMHz
 	s.active.lastTime = ""
 	s.active.lastAtt = floatPointer(result.AttenuationDB)
+	if err := s.setRFEnabledLocked(request.RFEnabled); err != nil {
+		return DeviceSnapshot{}, err
+	}
 	return s.refreshLocked()
 }
 
@@ -465,6 +530,9 @@ func (s *Service) ConfigureSweep(request SweepRequest) (DeviceSnapshot, error) {
 	s.active.lastStop = result.StopIFMHz
 	s.active.lastTime = result.SweepTime.String()
 	s.active.lastAtt = floatPointer(result.AttenuationDB)
+	if err := s.setRFEnabledLocked(request.RFEnabled); err != nil {
+		return DeviceSnapshot{}, err
+	}
 	return s.refreshLocked()
 }
 
@@ -481,6 +549,107 @@ func (s *Service) MaximumAttenuation() (DeviceSnapshot, error) {
 	}
 	s.active.lastAtt = floatPointer(client.BarracudaMaxAttenuationDB)
 	return s.refreshLocked()
+}
+
+// SetRFEnabled controls the Barracuda LMX2595 output. A zero-MHz request is
+// the firmware's explicit synthesizer power-down command; enabling restores
+// the fixed customer-plan LO without disturbing the configured ADF/DSA state.
+func (s *Service) SetRFEnabled(enabled bool) (DeviceSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireBarracudaLocked(); err != nil {
+		return DeviceSnapshot{}, err
+	}
+	if err := s.setRFEnabledLocked(enabled); err != nil {
+		return DeviceSnapshot{}, err
+	}
+	return s.refreshLocked()
+}
+
+func (s *Service) setRFEnabledLocked(enabled bool) error {
+	frequencyMHz := int32(0)
+	action := "off"
+	if enabled {
+		frequencyMHz = client.BarracudaFixedLOMHz
+		action = "on"
+	}
+	if err := s.active.client.SetLoFrequency(frequencyMHz); err != nil {
+		return fmt.Errorf("turn RF %s: %w", action, err)
+	}
+	if enabled {
+		if err := s.active.client.SetLMXOutputPower(client.BarracudaCalibratedLMXPowerCode); err != nil {
+			// Do not leave an uncalibrated output enabled if restoring the known
+			// customer power code failed.
+			_ = s.active.client.SetLoFrequency(0)
+			return fmt.Errorf("turn RF on: restore LMX output power: %w", err)
+		}
+	}
+	return nil
+}
+
+// ReadLMXRegisters returns live LMX2595 register values without changing the
+// device. An empty address list means the complete R0..R112 register map. The
+// firmware accepts at most 16 addresses per transaction, so larger GUI reads
+// are split into ordered batches here.
+func (s *Service) ReadLMXRegisters(addresses []uint32) (LMXRegisterReadResult, error) {
+	normalized, err := normalizeLMXAddresses(addresses)
+	if err != nil {
+		return LMXRegisterReadResult{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireBarracudaLocked(); err != nil {
+		return LMXRegisterReadResult{}, err
+	}
+
+	registers := make([]LMXRegister, 0, len(normalized))
+	for start := 0; start < len(normalized); start += lmxRegisterBatch {
+		end := start + lmxRegisterBatch
+		if end > len(normalized) {
+			end = len(normalized)
+		}
+		response, err := s.active.client.ReadLMX2595Registers(normalized[start:end])
+		if err != nil {
+			return LMXRegisterReadResult{}, fmt.Errorf("read LMX2595 registers R%d..R%d: %w", normalized[start], normalized[end-1], err)
+		}
+		if len(response.GetAddresses()) != len(response.GetValues()) || len(response.GetAddresses()) != end-start {
+			return LMXRegisterReadResult{}, fmt.Errorf("LMX2595 register response contained %d addresses and %d values for a %d-register request", len(response.GetAddresses()), len(response.GetValues()), end-start)
+		}
+		for i, address := range response.GetAddresses() {
+			if address >= lmxRegisterCount {
+				return LMXRegisterReadResult{}, fmt.Errorf("device returned invalid LMX2595 register R%d", address)
+			}
+			if address != normalized[start+i] {
+				return LMXRegisterReadResult{}, fmt.Errorf("device returned LMX2595 register R%d where R%d was requested", address, normalized[start+i])
+			}
+			registers = append(registers, LMXRegister{Address: address, Value: response.GetValues()[i]})
+		}
+	}
+	return LMXRegisterReadResult{Registers: registers}, nil
+}
+
+func normalizeLMXAddresses(addresses []uint32) ([]uint32, error) {
+	if len(addresses) == 0 {
+		all := make([]uint32, lmxRegisterCount)
+		for address := range all {
+			all[address] = uint32(address)
+		}
+		return all, nil
+	}
+	seen := make(map[uint32]struct{}, len(addresses))
+	for _, address := range addresses {
+		if address >= lmxRegisterCount {
+			return nil, fmt.Errorf("invalid LMX2595 register R%d (expected R0..R112)", address)
+		}
+		seen[address] = struct{}{}
+	}
+	normalized := make([]uint32, 0, len(seen))
+	for address := range seen {
+		normalized = append(normalized, address)
+	}
+	sort.Slice(normalized, func(i, j int) bool { return normalized[i] < normalized[j] })
+	return normalized, nil
 }
 
 func PreviewNetwork(address string) (NetworkPlan, error) {
@@ -582,6 +751,7 @@ func statusFromResponse(current *session) DeviceStatus {
 	out.SignalLockApplicable = true
 	out.SignalLocked = status.GetPllLocked()
 	details := status.GetBarracuda()
+	out.RFEnabled = details != nil && details.GetLmxRequestedFrequencyHz() != 0
 	customerPlan := details != nil &&
 		details.GetLmxRequestedFrequencyHz() == uint64(client.BarracudaFixedLOMHz)*1_000_000 &&
 		details.GetLmxOutputPowerCode() == client.BarracudaCalibratedLMXPowerCode

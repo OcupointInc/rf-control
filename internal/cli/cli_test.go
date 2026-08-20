@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -81,6 +81,32 @@ func TestResolveEnumArg(t *testing.T) {
 
 	if _, err := resolveEnumArg("bogus", pb.RfBand_value, rfBandAliases); err == nil {
 		t.Error("resolveEnumArg(\"bogus\") should have errored")
+	}
+}
+
+func TestParseLMXRegisterArgs(t *testing.T) {
+	addresses, err := parseLMXRegisterArgs([]string{"R3,1-2", "0x4", "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint32{1, 2, 3, 4}
+	if len(addresses) != len(want) {
+		t.Fatalf("addresses = %v, want %v", addresses, want)
+	}
+	for index := range want {
+		if addresses[index] != want[index] {
+			t.Fatalf("addresses = %v, want %v", addresses, want)
+		}
+	}
+
+	all, err := parseLMXRegisterArgs(nil)
+	if err != nil || len(all) != 113 || all[0] != 0 || all[112] != 112 {
+		t.Fatalf("all-register parse = %v, %v", all, err)
+	}
+	for _, invalid := range [][]string{{"113"}, {"9-3"}, {"1,,2"}, {"Rbogus"}} {
+		if _, err := parseLMXRegisterArgs(invalid); err == nil {
+			t.Errorf("parseLMXRegisterArgs(%v) succeeded", invalid)
+		}
 	}
 }
 

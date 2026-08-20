@@ -3,7 +3,11 @@
 /rf-control.exe
 /rf-control-*
 /dist/
-/cmd/rf-control-gui/build/
+/cmd/rf-control-gui/build/*
+!/cmd/rf-control-gui/build/appicon.png
+!/cmd/rf-control-gui/build/windows/
+/cmd/rf-control-gui/build/windows/*
+!/cmd/rf-control-gui/build/windows/icon.ico
 /cmd/rf-control-gui/frontend/node_modules/
 /cmd/rf-control-gui/frontend/dist/*
 !/cmd/rf-control-gui/frontend/dist/gitkeep

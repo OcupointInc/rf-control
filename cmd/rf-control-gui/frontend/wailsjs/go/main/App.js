@@ -26,8 +26,20 @@ export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
 }
 
+export function LoadTuningProfile() {
+  return window['go']['main']['App']['LoadTuningProfile']();
+}
+
 export function PreviewNetwork(arg1) {
   return window['go']['main']['App']['PreviewNetwork'](arg1);
+}
+
+export function ReadLMXRegisters(arg1) {
+  return window['go']['main']['App']['ReadLMXRegisters'](arg1);
+}
+
+export function SaveTuningProfile(arg1) {
+  return window['go']['main']['App']['SaveTuningProfile'](arg1);
 }
 
 export function SetIPAddress(arg1) {
@@ -36,4 +48,12 @@ export function SetIPAddress(arg1) {
 
 export function SetMaximumAttenuation() {
   return window['go']['main']['App']['SetMaximumAttenuation']();
+}
+
+export function SetRFEnabled(arg1) {
+  return window['go']['main']['App']['SetRFEnabled'](arg1);
+}
+
+export function Version() {
+  return window['go']['main']['App']['Version']();
 }

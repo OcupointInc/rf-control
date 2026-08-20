@@ -3,7 +3,9 @@ package main
 import (
 	"embed"
 	"fmt"
+	"os"
 
+	"github.com/OcupointInc/rf-control/internal/cli"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -13,6 +15,11 @@ import (
 var assets embed.FS
 
 func main() {
+	if len(os.Args) > 1 {
+		cli.Main()
+		return
+	}
+	detachConsole()
 	app := NewApp()
 	err := wails.Run(&options.App{
 		Title:     "Ocupoint RF Control",

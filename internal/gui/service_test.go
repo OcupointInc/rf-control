@@ -1,6 +1,8 @@
 package gui
 
 import (
+	"bytes"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,16 +13,19 @@ import (
 )
 
 type fakeDevice struct {
-	config       *pb.GetConfigResponse
-	status       *pb.GetStatusResponse
-	saved        *pb.SaveConfigRequest
-	cw           *client.BarracudaCWConfig
-	sweep        *client.BarracudaSweepConfig
-	dsa          int32
-	closed       int
-	statusDelay  time.Duration
-	statusActive atomic.Int32
-	statusMax    atomic.Int32
+	config         *pb.GetConfigResponse
+	status         *pb.GetStatusResponse
+	saved          *pb.SaveConfigRequest
+	cw             *client.BarracudaCWConfig
+	sweep          *client.BarracudaSweepConfig
+	dsa            int32
+	loFrequency    int32
+	lmxPowerCode   uint32
+	lmxReadBatches [][]uint32
+	closed         int
+	statusDelay    time.Duration
+	statusActive   atomic.Int32
+	statusMax      atomic.Int32
 }
 
 func (f *fakeDevice) Close() error                              { f.closed++; return nil }
@@ -62,6 +67,27 @@ func (f *fakeDevice) ConfigureBarracudaSweep(config client.BarracudaSweepConfig)
 	}, nil
 }
 func (f *fakeDevice) SetDsaAttenuation(value int32) error { f.dsa = value; return nil }
+func (f *fakeDevice) SetLoFrequency(value int32) error {
+	f.loFrequency = value
+	f.status.Barracuda.LmxRequestedFrequencyHz = uint64(value) * 1_000_000
+	if value == 0 {
+		f.status.Barracuda.LmxOutputPowerCode = 0
+	}
+	return nil
+}
+func (f *fakeDevice) SetLMXOutputPower(value uint32) error {
+	f.lmxPowerCode = value
+	f.status.Barracuda.LmxOutputPowerCode = value
+	return nil
+}
+func (f *fakeDevice) ReadLMX2595Registers(addresses []uint32) (*pb.Lmx2595RegisterReadResponse, error) {
+	f.lmxReadBatches = append(f.lmxReadBatches, append([]uint32(nil), addresses...))
+	values := make([]uint32, len(addresses))
+	for i, address := range addresses {
+		values[i] = 0xA000 + address
+	}
+	return &pb.Lmx2595RegisterReadResponse{Addresses: append([]uint32(nil), addresses...), Values: values, Success: true}, nil
+}
 
 func barracudaFake() *fakeDevice {
 	return &fakeDevice{
@@ -84,6 +110,7 @@ func barracudaFake() *fakeDevice {
 
 func serviceWithFake(fake *fakeDevice) *Service {
 	service := NewService()
+	service.probeUSB = true
 	service.open = func(Endpoint) (deviceClient, error) { return fake, nil }
 	service.listUSB = func() ([]string, error) { return nil, nil }
 	service.discoverEthernet = func(time.Duration) ([]*pb.DiscoveryResponse, error) { return nil, nil }
@@ -100,6 +127,81 @@ func TestPreviewNetwork(t *testing.T) {
 	}
 	if _, err := PreviewNetwork("192.168.60.1"); err == nil {
 		t.Fatal("gateway-conflicting address succeeded")
+	}
+}
+
+func TestValidateTuningProfileMatchesCLIApplyShape(t *testing.T) {
+	profile := TuningProfile{Barracuda: &BarracudaTuningProfile{
+		Mode: "cw", IFFrequencyMHz: 400, AttenuationDB: 6.25, Clock: "internal", RFEnabled: false,
+	}}
+	if err := ValidateTuningProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range [][]byte{[]byte(`"barracuda"`), []byte(`"if_frequency_mhz":400`), []byte(`"rf_enabled":false`)} {
+		if !bytes.Contains(encoded, field) {
+			t.Fatalf("profile JSON %s is missing %s", encoded, field)
+		}
+	}
+	profile.Barracuda.AttenuationDB = 6.1
+	if err := ValidateTuningProfile(profile); err == nil {
+		t.Fatal("non-quarter-dB attenuation was accepted")
+	}
+}
+
+func TestReadLMXRegistersNormalizesAndBatches(t *testing.T) {
+	fake := barracudaFake()
+	service := serviceWithFake(fake)
+	if _, err := service.Connect(Endpoint{Kind: "usb", Address: "COM4"}); err != nil {
+		t.Fatal(err)
+	}
+
+	requested := []uint32{32, 1, 16, 0, 16, 31, 2, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17}
+	result, err := service.ReadLMXRegisters(requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Registers) != 20 {
+		t.Fatalf("register count = %d, want 20", len(result.Registers))
+	}
+	if len(fake.lmxReadBatches) != 2 || len(fake.lmxReadBatches[0]) != 16 || len(fake.lmxReadBatches[1]) != 4 {
+		t.Fatalf("read batches = %#v", fake.lmxReadBatches)
+	}
+	for index, register := range result.Registers {
+		if register.Address != uint32(index) && !(index >= 3 && register.Address == uint32(index+13)) {
+			t.Fatalf("registers are not sorted: %#v", result.Registers)
+		}
+		if register.Value != 0xA000+register.Address {
+			t.Fatalf("R%d value = %#x", register.Address, register.Value)
+		}
+	}
+}
+
+func TestReadAllLMXRegistersUsesCompleteMap(t *testing.T) {
+	fake := barracudaFake()
+	service := serviceWithFake(fake)
+	if _, err := service.Connect(Endpoint{Kind: "usb", Address: "COM4"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ReadLMXRegisters(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Registers) != 113 || len(fake.lmxReadBatches) != 8 {
+		t.Fatalf("registers=%d batches=%d, want 113 and 8", len(result.Registers), len(fake.lmxReadBatches))
+	}
+	if result.Registers[0].Address != 0 || result.Registers[112].Address != 112 {
+		t.Fatalf("register range = R%d..R%d", result.Registers[0].Address, result.Registers[112].Address)
+	}
+}
+
+func TestReadLMXRegistersRejectsInvalidAddress(t *testing.T) {
+	service := serviceWithFake(barracudaFake())
+	if _, err := service.ReadLMXRegisters([]uint32{113}); err == nil {
+		t.Fatal("R113 was accepted")
 	}
 }
 
@@ -204,6 +306,34 @@ func TestDiscoverCanListUSBWithoutOpeningPorts(t *testing.T) {
 	}
 }
 
+func TestDiscoverIdentifiesResponsiveUSBDevice(t *testing.T) {
+	fake := barracudaFake()
+	service := serviceWithFake(fake)
+	service.listUSB = func() ([]string, error) { return []string{"COM4"}, nil }
+
+	result := service.Discover()
+	if len(result.Devices) != 1 {
+		t.Fatalf("discovery = %+v", result)
+	}
+	device := result.Devices[0]
+	if device.BoardType != "barracuda" || device.Name != "barracuda-lab" ||
+		len(device.Connections) != 1 || device.Connections[0].Address != "COM4" {
+		t.Fatalf("identified USB device = %+v", device)
+	}
+}
+
+func TestDiscoveryResultJSONUsesArraysForEmptyCollections(t *testing.T) {
+	service := serviceWithFake(barracudaFake())
+	result := service.Discover()
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"devices":[]`)) || !bytes.Contains(encoded, []byte(`"warnings":[]`)) {
+		t.Fatalf("empty discovery collections must be JSON arrays, got %s", encoded)
+	}
+}
+
 func TestBarracudaCWUsesCustomerPlanAndHidesEngineeringState(t *testing.T) {
 	fake := barracudaFake()
 	service := serviceWithFake(fake)
@@ -215,7 +345,7 @@ func TestBarracudaCWUsesCustomerPlanAndHidesEngineeringState(t *testing.T) {
 		t.Fatalf("initial snapshot exposed the wrong profile: %+v", snapshot.Status)
 	}
 
-	snapshot, err = service.ConfigureCW(CWRequest{FrequencyMHz: 900, Attenuation: 6.25, Clock: "external"})
+	snapshot, err = service.ConfigureCW(CWRequest{FrequencyMHz: 900, Attenuation: 6.25, Clock: "external", RFEnabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,6 +356,49 @@ func TestBarracudaCWUsesCustomerPlanAndHidesEngineeringState(t *testing.T) {
 	if status.Mode != "cw" || status.IFFrequencyMHz != 900 || status.AttenuationDB != 6.25 ||
 		status.NominalOutputDBm != -31.25 || !status.SignalLocked || !status.ReferenceLocked {
 		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestConfigureCWAppliesPendingRFStateAtomically(t *testing.T) {
+	fake := barracudaFake()
+	service := serviceWithFake(fake)
+	if _, err := service.Connect(Endpoint{Kind: "usb", Address: "COM4"}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := service.ConfigureCW(CWRequest{
+		FrequencyMHz: 400, Attenuation: 0, Clock: "internal", RFEnabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.cw == nil || fake.loFrequency != 0 || snapshot.Status.RFEnabled {
+		t.Fatalf("applied CW with RF off: cw=%+v lo=%d status=%+v", fake.cw, fake.loFrequency, snapshot.Status)
+	}
+}
+
+func TestSetRFEnabledPowersDownAndRestoresLMX(t *testing.T) {
+	fake := barracudaFake()
+	service := serviceWithFake(fake)
+	if _, err := service.Connect(Endpoint{Kind: "usb", Address: "COM4"}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := service.SetRFEnabled(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.loFrequency != 0 || snapshot.Status.RFEnabled {
+		t.Fatalf("RF off: lo=%d status=%+v", fake.loFrequency, snapshot.Status)
+	}
+
+	snapshot, err = service.SetRFEnabled(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.loFrequency != client.BarracudaFixedLOMHz ||
+		fake.lmxPowerCode != client.BarracudaCalibratedLMXPowerCode || !snapshot.Status.RFEnabled {
+		t.Fatalf("RF on: lo=%d power=%d status=%+v", fake.loFrequency, fake.lmxPowerCode, snapshot.Status)
 	}
 }
 
