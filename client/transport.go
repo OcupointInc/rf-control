@@ -7,14 +7,12 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"go.bug.st/serial"
-	"go.bug.st/serial/enumerator"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/OcupointInc/rf-control/controlpb"
@@ -340,14 +338,8 @@ func ListCandidatePorts() ([]string, error) {
 	// device, so use USB descriptors to select only our firmware when Windows
 	// provides them. Keep the name-based path as a fallback for platforms where
 	// detailed enumeration is unavailable or incomplete.
-	if runtime.GOOS == "windows" {
-		detailed, detailedErr := enumerator.GetDetailedPortsList()
-		if detailedErr == nil {
-			matches := matchingDevicePorts(detailed)
-			if matches != nil {
-				return matches, nil
-			}
-		}
+	if matches, available := listDevicePortsByUSBID(); available {
+		return matches, nil
 	}
 
 	all, err := serial.GetPortsList()
@@ -384,21 +376,28 @@ func ListCandidatePorts() ([]string, error) {
 // result means the detailed enumeration did not expose USB IDs, so callers
 // should fall back to name-based filtering. An empty non-nil result means USB
 // IDs were available and no Ocupoint control device is attached.
-func matchingDevicePorts(details []*enumerator.PortDetails) []string {
+type usbPortDetails struct {
+	name  string
+	isUSB bool
+	vid   string
+	pid   string
+}
+
+func matchingDevicePorts(details []usbPortDetails) []string {
 	idsAvailable := false
 	seen := make(map[string]bool)
 	ports := make([]string, 0)
 	for _, detail := range details {
-		if detail == nil || !detail.IsUSB || detail.VID == "" || detail.PID == "" {
+		if !detail.isUSB || detail.vid == "" || detail.pid == "" {
 			continue
 		}
 		idsAvailable = true
-		if !strings.EqualFold(detail.VID, DeviceVID) || !strings.EqualFold(detail.PID, DevicePID) {
+		if !strings.EqualFold(detail.vid, DeviceVID) || !strings.EqualFold(detail.pid, DevicePID) {
 			continue
 		}
-		if detail.Name != "" && !seen[detail.Name] {
-			seen[detail.Name] = true
-			ports = append(ports, detail.Name)
+		if detail.name != "" && !seen[detail.name] {
+			seen[detail.name] = true
+			ports = append(ports, detail.name)
 		}
 	}
 	if !idsAvailable {
