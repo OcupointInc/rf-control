@@ -93,9 +93,20 @@ jobs:
     container: rockylinux:8
     steps:
       - name: Install RHEL 8 build dependencies
-        run: >-
-          dnf install -y git tar gzip findutils gcc gcc-c++
-          pkgconf-pkg-config gtk3-devel webkit2gtk3-devel rpm-build
+        timeout-minutes: 12
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 180s dnf install -y \
+              --setopt=timeout=30 --setopt=retries=3 \
+              git tar gzip findutils gcc gcc-c++ \
+              pkgconf-pkg-config gtk3-devel webkit2gtk3-devel rpm-build; then
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - uses: actions/checkout@v4
 
