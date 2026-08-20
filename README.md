@@ -117,42 +117,44 @@ The schema:
 
 ### Barracuda customer control
 
-For normal use there are only two RF commands. Both fix the LMX2595 LO at
-9600 MHz, wake it from the firmware's quiet power-on state, safely mute the DSA
-while reconfiguring, and then apply the requested attenuation.
+For normal use there are only two RF commands. Customer frequencies are always
+entered and reported as 50–1500 MHz IF. The software handles conversion and
+synthesizer settings internally, safely mutes the output while reconfiguring,
+and then applies the requested attenuation.
 
-CW at 10 GHz using the internal clock:
+CW at 400 MHz IF using the internal clock:
 
 ```bash
-rf-control --ip 192.168.1.253 cw --frequency 10000
+rf-control --ip 192.168.1.253 cw --frequency 400
 ```
 
-Continuous 9.6–11.1 GHz sweep over 10 seconds using an external 10 MHz
+Continuous 50–1500 MHz IF sweep over 10 seconds using an external 10 MHz
 reference:
 
 ```bash
 rf-control --ip 192.168.1.253 sweep \
-  --start 9600 --stop 11100 --time 10s --clock external
+  --start 50 --stop 1500 --time 10s --clock external
 ```
 
 Set attenuation with `--attenuation`; values are 0–31.75 dB in 0.25 dB steps:
 
 ```bash
 rf-control --ip 192.168.1.253 cw \
-  --frequency 10500 --attenuation 6.25 --clock internal
+  --frequency 900 --attenuation 6.25 --clock internal
 ```
 
 The calibrated nominal output is −25 dBm at 0 dB attenuation. Each customer
-command restores the calibrated synthesizer-power baseline before enabling RF.
+command restores the calibrated power baseline before enabling RF.
 Each dB of attenuation then lowers the nominal level by one dB, so 6.25 dB
 requests approximately −31.25 dBm. The command prints the requested nominal
 level.
 
 `--clock internal` is the default. With `--clock external`, RF remains muted and
 the command fails if the external reference is not valid, selected, and locked.
-Use `rf-control --ip 192.168.1.253 status` to inspect the current clock, LO,
-waveform mode, attenuation, power estimate, lock state, and controller
-temperature.
+Use `rf-control --ip 192.168.1.253 status` to inspect the current clock,
+IF/waveform mode, attenuation, power estimate, lock state, and controller
+temperature. Internal conversion details are available only through
+`rf-control engineering-status`.
 
 The lower-level `set-*`, diagnostic, and firmware-update commands remain
 available for engineering and service work through
@@ -167,10 +169,10 @@ handoff instructions.
 
 ```
 cw --frequency <MHz> [--attenuation <dB>] [--clock internal|external]
-                       Customer CW; LO fixed at 9600 MHz
+                       Customer CW at 50-1500 MHz IF
 sweep --start <MHz> --stop <MHz> --time <duration>
       [--attenuation <dB>] [--clock internal|external]
-                       Customer continuous sawtooth sweep; LO fixed at 9600 MHz
+                       Customer continuous sweep at 50-1500 MHz IF
 list                   Discover Ethernet and USB devices
 get                    Print the current device configuration
 set-ip [flags]         Change --address, --gateway, --subnet, --hostname
@@ -178,6 +180,7 @@ apply-json <file>      Apply a JSON network config file
 apply [file]           Apply a full-device JSON config from stdin (or a file)
                        and print a JSON result — the command to call from Python
 status                 Print live RF status
+engineering-status     Include Barracuda conversion/synthesizer status
 set-att <dB>           Set frontend attenuation
 set-cal-att <dB>       Set calibration attenuation
 set-channels <on|off>  Enable or disable the RF channels
@@ -464,7 +467,7 @@ The Barracuda customer interface is available as one nested object. CW:
 {
   "barracuda": {
     "mode": "cw",
-    "frequency_mhz": 10000,
+    "if_frequency_mhz": 400,
     "attenuation_db": 0,
     "clock": "internal"
   }
@@ -477,8 +480,8 @@ Continuous sweep:
 {
   "barracuda": {
     "mode": "sweep",
-    "start_mhz": 9600,
-    "stop_mhz": 11100,
+    "start_if_mhz": 50,
+    "stop_if_mhz": 1500,
     "sweep_time": "10s",
     "attenuation_db": 0,
     "clock": "external"
@@ -486,9 +489,10 @@ Continuous sweep:
 }
 ```
 
-Pass either document to `rf-control --ip ADDRESS apply`. The same range,
-quarter-dB, fixed-LO, clock-lock, and safe-muting rules as `cw` and `sweep`
-apply. A `network` block may accompany `barracuda`; legacy RF fields may not.
+Pass either document to `rf-control --ip ADDRESS apply`. The same IF range,
+quarter-dB, clock-lock, internal-conversion, and safe-muting rules as `cw` and
+`sweep` apply. A `network` block may accompany `barracuda`; legacy RF fields
+may not.
 
 The older shared-board fields remain available for Whalepod, STRAPS, and RF
 switch automation:
@@ -597,7 +601,7 @@ if err != nil {
 fmt.Println(cfg.SerialNumber)
 
 result, err := c.ConfigureBarracudaCW(client.BarracudaCWConfig{
-    FrequencyMHz:  10000,
+    IFFrequencyMHz: 400,
     AttenuationDB: 0,
     ExternalClock: false,
 })
@@ -608,10 +612,10 @@ fmt.Printf("nominal output: %.2f dBm\n", result.NominalOutputDBm)
 ```
 
 `ConfigureBarracudaCW` and `ConfigureBarracudaSweep` are the supported
-customer-facing Go API. They enforce the 9500–11500 MHz operating range, keep
-the LO at 9600 MHz, mute during reconfiguration, validate the selected clock,
-and apply the output attenuation. Lower-level methods remain available for
-engineering tools.
+customer-facing Go API. They enforce the 50–1500 MHz IF operating range, derive
+the conversion plan internally, mute during reconfiguration, validate the
+selected clock, and apply the output attenuation. Lower-level methods remain
+available for engineering tools.
 
 `Client` also has one method per request the firmware supports today —
 `GetConfig`, `SaveConfig`, `GetStatus`, `SetAttenuation`, `SetCalAttenuation`,

@@ -51,7 +51,7 @@ func TestConfigureBarracudaCWSequence(t *testing.T) {
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
 	}}
 	result, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{
-		FrequencyMHz: 10000, AttenuationDB: 6.25,
+		IFFrequencyMHz: 400, AttenuationDB: 6.25,
 	})
 	if err != nil {
 		t.Fatalf("ConfigureBarracudaCW: %v", err)
@@ -89,7 +89,8 @@ func TestConfigureBarracudaCWSequence(t *testing.T) {
 	if got := tx.sent[7].GetSetDsaAttenuationRequest().GetQuarterDb(); got != 25 {
 		t.Errorf("final attenuation = %d quarter-dB, want 25", got)
 	}
-	if result.Mode != "cw" || result.LOFrequencyMHz != 9600 || result.NominalOutputDBm != -31.25 || !result.ADFLocked {
+	if result.Mode != "cw" || result.StartIFMHz != 400 || result.StopIFMHz != 400 ||
+		result.NominalOutputDBm != -31.25 || !result.SignalLocked {
 		t.Errorf("result = %+v", result)
 	}
 }
@@ -109,7 +110,7 @@ func TestConfigureBarracudaSweepSequence(t *testing.T) {
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
 	}}
 	result, err := New(tx).ConfigureBarracudaSweep(BarracudaSweepConfig{
-		StartMHz: 9600, StopMHz: 11100, SweepTime: 10 * time.Second,
+		StartIFMHz: 50, StopIFMHz: 1500, SweepTime: 10 * time.Second,
 		AttenuationDB: 0, ExternalClock: true,
 	})
 	if err != nil {
@@ -122,7 +123,7 @@ func TestConfigureBarracudaSweepSequence(t *testing.T) {
 	if chirp == nil {
 		t.Fatalf("request 5 = %T, want chirp", tx.sent[5].MessageId)
 	}
-	if chirp.GetStartFreqMhz() != 9600 || chirp.GetDeviationMhz() != 1500 ||
+	if chirp.GetStartFreqMhz() != 9650 || chirp.GetDeviationMhz() != 1450 ||
 		chirp.GetRampTimeUs() != 10_000_000 || !chirp.GetEnabled() ||
 		chirp.GetMode() != pb.ChirpMode_CHIRP_MODE_SAWTOOTH_CONTINUOUS {
 		t.Errorf("chirp = %+v", chirp)
@@ -139,7 +140,7 @@ func TestConfigureBarracudaExternalClockFailureLeavesMuted(t *testing.T) {
 		{MessageId: &pb.Packet_SetClockSourceResponse{SetClockSourceResponse: &pb.SetClockSourceResponse{External: true}}},
 	}}
 	_, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{
-		FrequencyMHz: 10000, ExternalClock: true,
+		IFFrequencyMHz: 400, ExternalClock: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "not valid and fully locked") {
 		t.Fatalf("error = %v, want external-reference failure", err)
@@ -164,7 +165,7 @@ func TestConfigureBarracudaPowerMismatchLeavesMuted(t *testing.T) {
 		{MessageId: &pb.Packet_SetPllFrequencyResponse{SetPllFrequencyResponse: &pb.SetPllFrequencyResponse{}}},
 		badStatus,
 	}}
-	_, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{FrequencyMHz: 10000})
+	_, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400})
 	if err == nil || !strings.Contains(err.Error(), "calibrated customer setting") {
 		t.Fatalf("error = %v, want calibrated-power failure", err)
 	}
@@ -182,19 +183,19 @@ func TestConfigureBarracudaRejectsInvalidInputBeforeTransport(t *testing.T) {
 		call func(*Client) error
 	}{
 		{"CW range", func(c *Client) error {
-			_, err := c.ConfigureBarracudaCW(BarracudaCWConfig{FrequencyMHz: 9000})
+			_, err := c.ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 49})
 			return err
 		}},
 		{"attenuation step", func(c *Client) error {
-			_, err := c.ConfigureBarracudaCW(BarracudaCWConfig{FrequencyMHz: 10000, AttenuationDB: 0.1})
+			_, err := c.ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400, AttenuationDB: 0.1})
 			return err
 		}},
 		{"sweep order", func(c *Client) error {
-			_, err := c.ConfigureBarracudaSweep(BarracudaSweepConfig{StartMHz: 11000, StopMHz: 10000, SweepTime: time.Second})
+			_, err := c.ConfigureBarracudaSweep(BarracudaSweepConfig{StartIFMHz: 1000, StopIFMHz: 500, SweepTime: time.Second})
 			return err
 		}},
 		{"sweep resolution", func(c *Client) error {
-			_, err := c.ConfigureBarracudaSweep(BarracudaSweepConfig{StartMHz: 9600, StopMHz: 11100, SweepTime: time.Nanosecond})
+			_, err := c.ConfigureBarracudaSweep(BarracudaSweepConfig{StartIFMHz: 50, StopIFMHz: 1500, SweepTime: time.Nanosecond})
 			return err
 		}},
 	}

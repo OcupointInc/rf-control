@@ -16,24 +16,24 @@ const (
 	// BarracudaCalibratedLMXPowerCode is the LMX2595 OUTA_PWR setting used
 	// when the nominal -25 dBm output level was established.
 	BarracudaCalibratedLMXPowerCode uint32 = 50
-	BarracudaMinFrequencyMHz        int32  = 9500
-	BarracudaMaxFrequencyMHz        int32  = 11500
+	BarracudaMinIFFrequencyMHz      int32  = 50
+	BarracudaMaxIFFrequencyMHz      int32  = 1500
 	BarracudaMaxAttenuationDB              = 31.75
 )
 
-// BarracudaCWConfig is the small customer-facing configuration for a CW tone.
-// The LMX2595 LO is always set to BarracudaFixedLOMHz.
+// BarracudaCWConfig is the small customer-facing configuration for a CW IF.
+// The RF synthesizer plan is derived internally and is not customer-settable.
 type BarracudaCWConfig struct {
-	FrequencyMHz  int32
-	AttenuationDB float64
-	ExternalClock bool
+	IFFrequencyMHz int32
+	AttenuationDB  float64
+	ExternalClock  bool
 }
 
-// BarracudaSweepConfig is the small customer-facing configuration for a
-// continuous sawtooth sweep. The LMX2595 LO is always fixed at 9600 MHz.
+// BarracudaSweepConfig is the customer-facing configuration for a continuous
+// sawtooth IF sweep. The RF synthesizer plan is derived internally.
 type BarracudaSweepConfig struct {
-	StartMHz      int32
-	StopMHz       int32
+	StartIFMHz    int32
+	StopIFMHz     int32
 	SweepTime     time.Duration
 	AttenuationDB float64
 	ExternalClock bool
@@ -44,14 +44,13 @@ type BarracudaSweepConfig struct {
 // -25 dBm at 0 dB attenuation, reduced one dB per dB of attenuation.
 type BarracudaConfiguration struct {
 	Mode             string
-	LOFrequencyMHz   int32
-	StartMHz         int32
-	StopMHz          int32
+	StartIFMHz       int32
+	StopIFMHz        int32
 	SweepTime        time.Duration
 	AttenuationDB    float64
 	NominalOutputDBm float64
 	ExternalClock    bool
-	ADFLocked        bool
+	SignalLocked     bool
 }
 
 // SetBarracudaClockSource selects the Barracuda LMK clock source and returns
@@ -156,21 +155,21 @@ func (c *Client) RunEqualizedSweep(req *pb.RunEqualizedSweepRequest) (*pb.RunEqu
 }
 
 // ConfigureBarracudaCW safely applies the complete customer CW plan. It verifies
-// the board, mutes the DSA during reconfiguration, fixes the LO at 9600 MHz,
-// programs the ADF4159 CW tone, then applies the requested attenuation.
+// the board, mutes the DSA during reconfiguration, derives the internal RF plan
+// from the requested IF, then applies the requested attenuation.
 func (c *Client) ConfigureBarracudaCW(cfg BarracudaCWConfig) (*BarracudaConfiguration, error) {
 	quarterDB, err := validateBarracudaAttenuation(cfg.AttenuationDB)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateBarracudaFrequency("CW frequency", cfg.FrequencyMHz); err != nil {
+	if err := validateBarracudaIFFrequency("CW IF frequency", cfg.IFFrequencyMHz); err != nil {
 		return nil, err
 	}
 	if err := c.prepareBarracudaCustomerPlan(cfg.ExternalClock); err != nil {
 		return nil, err
 	}
-	if err := c.SetPllFrequency(cfg.FrequencyMHz); err != nil {
-		return nil, fmt.Errorf("set CW frequency: %w", err)
+	if err := c.SetPllFrequency(barracudaRFFrequencyMHz(cfg.IFFrequencyMHz)); err != nil {
+		return nil, fmt.Errorf("set CW IF frequency: %w", err)
 	}
 	status, err := c.GetStatus()
 	if err != nil {
@@ -180,35 +179,34 @@ func (c *Client) ConfigureBarracudaCW(cfg BarracudaCWConfig) (*BarracudaConfigur
 		return nil, err
 	}
 	if !status.GetPllLocked() {
-		return nil, &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: "ADF4159 did not lock; output remains muted"}
+		return nil, &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: "signal generator did not lock; output remains muted"}
 	}
 	if err := c.SetDsaAttenuation(quarterDB); err != nil {
 		return nil, fmt.Errorf("set attenuation: %w", err)
 	}
 	return &BarracudaConfiguration{
-		Mode: "cw", LOFrequencyMHz: BarracudaFixedLOMHz,
-		StartMHz: cfg.FrequencyMHz, StopMHz: cfg.FrequencyMHz,
+		Mode: "cw", StartIFMHz: cfg.IFFrequencyMHz, StopIFMHz: cfg.IFFrequencyMHz,
 		AttenuationDB:    cfg.AttenuationDB,
 		NominalOutputDBm: BarracudaNominalOutputDBm - cfg.AttenuationDB,
-		ExternalClock:    cfg.ExternalClock, ADFLocked: status.GetPllLocked(),
+		ExternalClock:    cfg.ExternalClock, SignalLocked: status.GetPllLocked(),
 	}, nil
 }
 
 // ConfigureBarracudaSweep safely applies a continuous sawtooth sweep using the
-// customer operating plan. Only start, stop, duration, attenuation, and clock
-// source are configurable; the LO remains fixed at 9600 MHz.
+// customer operating plan. Only IF start, IF stop, duration, attenuation, and
+// clock source are configurable; the RF synthesizer plan remains internal.
 func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaConfiguration, error) {
 	quarterDB, err := validateBarracudaAttenuation(cfg.AttenuationDB)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateBarracudaFrequency("sweep start", cfg.StartMHz); err != nil {
+	if err := validateBarracudaIFFrequency("sweep IF start", cfg.StartIFMHz); err != nil {
 		return nil, err
 	}
-	if err := validateBarracudaFrequency("sweep stop", cfg.StopMHz); err != nil {
+	if err := validateBarracudaIFFrequency("sweep IF stop", cfg.StopIFMHz); err != nil {
 		return nil, err
 	}
-	if cfg.StopMHz <= cfg.StartMHz {
+	if cfg.StopIFMHz <= cfg.StartIFMHz {
 		return nil, fmt.Errorf("sweep stop must be greater than start")
 	}
 	rampTimeUs, err := barracudaSweepMicroseconds(cfg.SweepTime)
@@ -219,14 +217,14 @@ func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaCo
 		return nil, err
 	}
 	locked, err := c.SetChirp(
-		cfg.StartMHz, cfg.StopMHz-cfg.StartMHz, rampTimeUs,
+		barracudaRFFrequencyMHz(cfg.StartIFMHz), cfg.StopIFMHz-cfg.StartIFMHz, rampTimeUs,
 		pb.ChirpMode_CHIRP_MODE_SAWTOOTH_CONTINUOUS, true,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("set sweep: %w", err)
 	}
 	if !locked {
-		return nil, &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: "ADF4159 did not lock; output remains muted"}
+		return nil, &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: "signal generator did not lock; output remains muted"}
 	}
 	status, err := c.GetStatus()
 	if err != nil {
@@ -239,11 +237,10 @@ func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaCo
 		return nil, fmt.Errorf("set attenuation: %w", err)
 	}
 	return &BarracudaConfiguration{
-		Mode: "sweep", LOFrequencyMHz: BarracudaFixedLOMHz,
-		StartMHz: cfg.StartMHz, StopMHz: cfg.StopMHz, SweepTime: cfg.SweepTime,
+		Mode: "sweep", StartIFMHz: cfg.StartIFMHz, StopIFMHz: cfg.StopIFMHz, SweepTime: cfg.SweepTime,
 		AttenuationDB:    cfg.AttenuationDB,
 		NominalOutputDBm: BarracudaNominalOutputDBm - cfg.AttenuationDB,
-		ExternalClock:    cfg.ExternalClock, ADFLocked: locked,
+		ExternalClock:    cfg.ExternalClock, SignalLocked: locked,
 	}, nil
 }
 
@@ -274,12 +271,12 @@ func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
 			Detail: "external reference was selected but is not valid and fully locked; output remains muted"}
 	}
 	if err := c.SetLoFrequency(BarracudaFixedLOMHz); err != nil {
-		return fmt.Errorf("set fixed 9600 MHz LO: %w", err)
+		return fmt.Errorf("configure internal frequency plan: %w", err)
 	}
 	// Force the calibrated baseline rather than inheriting a manual power code
 	// left behind by an earlier engineering session.
 	if err := c.SetLMXOutputPower(BarracudaCalibratedLMXPowerCode); err != nil {
-		return fmt.Errorf("set calibrated LMX2595 output power: %w", err)
+		return fmt.Errorf("configure calibrated output level: %w", err)
 	}
 	return nil
 }
@@ -288,25 +285,29 @@ func verifyBarracudaLO(status *pb.GetStatusResponse) error {
 	details := status.GetBarracuda()
 	if details == nil {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_UNSUPPORTED,
-			Detail: "Barracuda firmware does not provide LO verification; output remains muted"}
+			Detail: "firmware does not provide internal frequency verification; output remains muted"}
 	}
 	const expectedHz = uint64(BarracudaFixedLOMHz) * 1_000_000
 	if details.GetLmxRequestedFrequencyHz() != expectedHz || !details.GetLmxLocked() {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
-			Detail: "LMX2595 is not verified at the fixed 9600 MHz LO; output remains muted"}
+			Detail: "internal frequency plan could not be verified; output remains muted"}
 	}
 	if details.GetLmxOutputPowerCode() != BarracudaCalibratedLMXPowerCode {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
-			Detail: "LMX2595 output power is not at the calibrated customer setting; output remains muted"}
+			Detail: "internal output power is not at the calibrated customer setting; output remains muted"}
 	}
 	return nil
 }
 
-func validateBarracudaFrequency(name string, frequencyMHz int32) error {
-	if frequencyMHz < BarracudaMinFrequencyMHz || frequencyMHz > BarracudaMaxFrequencyMHz {
-		return fmt.Errorf("%s must be %d..%d MHz", name, BarracudaMinFrequencyMHz, BarracudaMaxFrequencyMHz)
+func validateBarracudaIFFrequency(name string, frequencyMHz int32) error {
+	if frequencyMHz < BarracudaMinIFFrequencyMHz || frequencyMHz > BarracudaMaxIFFrequencyMHz {
+		return fmt.Errorf("%s must be %d..%d MHz", name, BarracudaMinIFFrequencyMHz, BarracudaMaxIFFrequencyMHz)
 	}
 	return nil
+}
+
+func barracudaRFFrequencyMHz(ifFrequencyMHz int32) int32 {
+	return BarracudaFixedLOMHz + ifFrequencyMHz
 }
 
 func validateBarracudaAttenuation(attenuationDB float64) (int32, error) {

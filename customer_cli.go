@@ -65,7 +65,7 @@ func parseCustomerCW(args []string) (*commonFlags, client.BarracudaCWConfig, err
 	fs.SetOutput(io.Discard)
 	common := &commonFlags{}
 	addCommonFlags(fs, common)
-	frequency := fs.Int("frequency", 0, "CW frequency in MHz (9500..11500)")
+	frequency := fs.Int("frequency", 0, "CW IF frequency in MHz (50..1500)")
 	attenuation := fs.Float64("attenuation", 0, "output attenuation in dB (0..31.75, 0.25 dB steps)")
 	clock := fs.String("clock", "internal", "clock source: internal or external")
 	if err := fs.Parse(args); err != nil {
@@ -80,16 +80,16 @@ func parseCustomerCW(args []string) (*commonFlags, client.BarracudaCWConfig, err
 	if *frequency == 0 {
 		return nil, client.BarracudaCWConfig{}, usagef("cw requires --frequency MHz")
 	}
-	if *frequency < int(client.BarracudaMinFrequencyMHz) || *frequency > int(client.BarracudaMaxFrequencyMHz) {
-		return nil, client.BarracudaCWConfig{}, usagef("CW frequency must be %d..%d MHz",
-			client.BarracudaMinFrequencyMHz, client.BarracudaMaxFrequencyMHz)
+	if *frequency < int(client.BarracudaMinIFFrequencyMHz) || *frequency > int(client.BarracudaMaxIFFrequencyMHz) {
+		return nil, client.BarracudaCWConfig{}, usagef("CW IF frequency must be %d..%d MHz",
+			client.BarracudaMinIFFrequencyMHz, client.BarracudaMaxIFFrequencyMHz)
 	}
 	external, err := parseCustomerClock(*clock)
 	if err != nil {
 		return nil, client.BarracudaCWConfig{}, err
 	}
 	cfg := client.BarracudaCWConfig{
-		FrequencyMHz: int32(*frequency), AttenuationDB: *attenuation, ExternalClock: external,
+		IFFrequencyMHz: int32(*frequency), AttenuationDB: *attenuation, ExternalClock: external,
 	}
 	if err := validateCustomerCW(cfg); err != nil {
 		return nil, client.BarracudaCWConfig{}, usagef("%v", err)
@@ -102,8 +102,8 @@ func parseCustomerSweep(args []string) (*commonFlags, client.BarracudaSweepConfi
 	fs.SetOutput(io.Discard)
 	common := &commonFlags{}
 	addCommonFlags(fs, common)
-	start := fs.Int("start", 0, "sweep start frequency in MHz (9500..11500)")
-	stop := fs.Int("stop", 0, "sweep stop frequency in MHz (9500..11500)")
+	start := fs.Int("start", 0, "sweep start IF in MHz (50..1500)")
+	stop := fs.Int("stop", 0, "sweep stop IF in MHz (50..1500)")
 	timeText := fs.String("time", "", "sweep time with units, for example 10s or 35us")
 	attenuation := fs.Float64("attenuation", 0, "output attenuation in dB (0..31.75, 0.25 dB steps)")
 	clock := fs.String("clock", "internal", "clock source: internal or external")
@@ -119,13 +119,13 @@ func parseCustomerSweep(args []string) (*commonFlags, client.BarracudaSweepConfi
 	if *start == 0 || *stop == 0 || *timeText == "" {
 		return nil, client.BarracudaSweepConfig{}, usagef("sweep requires --start, --stop, and --time")
 	}
-	if *start < int(client.BarracudaMinFrequencyMHz) || *start > int(client.BarracudaMaxFrequencyMHz) {
-		return nil, client.BarracudaSweepConfig{}, usagef("sweep start must be %d..%d MHz",
-			client.BarracudaMinFrequencyMHz, client.BarracudaMaxFrequencyMHz)
+	if *start < int(client.BarracudaMinIFFrequencyMHz) || *start > int(client.BarracudaMaxIFFrequencyMHz) {
+		return nil, client.BarracudaSweepConfig{}, usagef("sweep IF start must be %d..%d MHz",
+			client.BarracudaMinIFFrequencyMHz, client.BarracudaMaxIFFrequencyMHz)
 	}
-	if *stop < int(client.BarracudaMinFrequencyMHz) || *stop > int(client.BarracudaMaxFrequencyMHz) {
-		return nil, client.BarracudaSweepConfig{}, usagef("sweep stop must be %d..%d MHz",
-			client.BarracudaMinFrequencyMHz, client.BarracudaMaxFrequencyMHz)
+	if *stop < int(client.BarracudaMinIFFrequencyMHz) || *stop > int(client.BarracudaMaxIFFrequencyMHz) {
+		return nil, client.BarracudaSweepConfig{}, usagef("sweep IF stop must be %d..%d MHz",
+			client.BarracudaMinIFFrequencyMHz, client.BarracudaMaxIFFrequencyMHz)
 	}
 	duration, err := time.ParseDuration(*timeText)
 	if err != nil {
@@ -136,7 +136,7 @@ func parseCustomerSweep(args []string) (*commonFlags, client.BarracudaSweepConfi
 		return nil, client.BarracudaSweepConfig{}, err
 	}
 	cfg := client.BarracudaSweepConfig{
-		StartMHz: int32(*start), StopMHz: int32(*stop), SweepTime: duration,
+		StartIFMHz: int32(*start), StopIFMHz: int32(*stop), SweepTime: duration,
 		AttenuationDB: *attenuation, ExternalClock: external,
 	}
 	if err := validateCustomerSweep(cfg); err != nil {
@@ -167,41 +167,41 @@ func (cfg *barracudaBatch) customerConfigs() (*client.BarracudaCWConfig, *client
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
 	case "cw":
-		if cfg.FrequencyMHz == nil {
-			return nil, nil, fmt.Errorf("CW mode requires frequency_mhz")
+		if cfg.IFFrequencyMHz == nil {
+			return nil, nil, fmt.Errorf("CW mode requires if_frequency_mhz")
 		}
-		if *cfg.FrequencyMHz < int(client.BarracudaMinFrequencyMHz) || *cfg.FrequencyMHz > int(client.BarracudaMaxFrequencyMHz) {
-			return nil, nil, fmt.Errorf("CW frequency must be %d..%d MHz",
-				client.BarracudaMinFrequencyMHz, client.BarracudaMaxFrequencyMHz)
+		if *cfg.IFFrequencyMHz < int(client.BarracudaMinIFFrequencyMHz) || *cfg.IFFrequencyMHz > int(client.BarracudaMaxIFFrequencyMHz) {
+			return nil, nil, fmt.Errorf("CW IF frequency must be %d..%d MHz",
+				client.BarracudaMinIFFrequencyMHz, client.BarracudaMaxIFFrequencyMHz)
 		}
-		if cfg.StartMHz != nil || cfg.StopMHz != nil || cfg.SweepTime != "" {
-			return nil, nil, fmt.Errorf("CW mode does not accept start_mhz, stop_mhz, or sweep_time")
+		if cfg.StartIFMHz != nil || cfg.StopIFMHz != nil || cfg.SweepTime != "" {
+			return nil, nil, fmt.Errorf("CW mode does not accept start_if_mhz, stop_if_mhz, or sweep_time")
 		}
 		cw := &client.BarracudaCWConfig{
-			FrequencyMHz: int32(*cfg.FrequencyMHz), AttenuationDB: cfg.AttenuationDB, ExternalClock: external,
+			IFFrequencyMHz: int32(*cfg.IFFrequencyMHz), AttenuationDB: cfg.AttenuationDB, ExternalClock: external,
 		}
 		if err := validateCustomerCW(*cw); err != nil {
 			return nil, nil, err
 		}
 		return cw, nil, nil
 	case "sweep":
-		if cfg.FrequencyMHz != nil {
-			return nil, nil, fmt.Errorf("sweep mode does not accept frequency_mhz")
+		if cfg.IFFrequencyMHz != nil {
+			return nil, nil, fmt.Errorf("sweep mode does not accept if_frequency_mhz")
 		}
-		if cfg.StartMHz == nil || cfg.StopMHz == nil || cfg.SweepTime == "" {
-			return nil, nil, fmt.Errorf("sweep mode requires start_mhz, stop_mhz, and sweep_time")
+		if cfg.StartIFMHz == nil || cfg.StopIFMHz == nil || cfg.SweepTime == "" {
+			return nil, nil, fmt.Errorf("sweep mode requires start_if_mhz, stop_if_mhz, and sweep_time")
 		}
-		if *cfg.StartMHz < int(client.BarracudaMinFrequencyMHz) || *cfg.StartMHz > int(client.BarracudaMaxFrequencyMHz) ||
-			*cfg.StopMHz < int(client.BarracudaMinFrequencyMHz) || *cfg.StopMHz > int(client.BarracudaMaxFrequencyMHz) {
-			return nil, nil, fmt.Errorf("sweep frequencies must be %d..%d MHz",
-				client.BarracudaMinFrequencyMHz, client.BarracudaMaxFrequencyMHz)
+		if *cfg.StartIFMHz < int(client.BarracudaMinIFFrequencyMHz) || *cfg.StartIFMHz > int(client.BarracudaMaxIFFrequencyMHz) ||
+			*cfg.StopIFMHz < int(client.BarracudaMinIFFrequencyMHz) || *cfg.StopIFMHz > int(client.BarracudaMaxIFFrequencyMHz) {
+			return nil, nil, fmt.Errorf("sweep IF frequencies must be %d..%d MHz",
+				client.BarracudaMinIFFrequencyMHz, client.BarracudaMaxIFFrequencyMHz)
 		}
 		duration, err := time.ParseDuration(cfg.SweepTime)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid sweep_time %q: include a unit such as 10s, 20ms, or 35us", cfg.SweepTime)
 		}
 		sweep := &client.BarracudaSweepConfig{
-			StartMHz: int32(*cfg.StartMHz), StopMHz: int32(*cfg.StopMHz), SweepTime: duration,
+			StartIFMHz: int32(*cfg.StartIFMHz), StopIFMHz: int32(*cfg.StopIFMHz), SweepTime: duration,
 			AttenuationDB: cfg.AttenuationDB, ExternalClock: external,
 		}
 		if err := validateCustomerSweep(*sweep); err != nil {
@@ -214,20 +214,20 @@ func (cfg *barracudaBatch) customerConfigs() (*client.BarracudaCWConfig, *client
 }
 
 func validateCustomerCW(cfg client.BarracudaCWConfig) error {
-	if cfg.FrequencyMHz < client.BarracudaMinFrequencyMHz || cfg.FrequencyMHz > client.BarracudaMaxFrequencyMHz {
-		return fmt.Errorf("CW frequency must be %d..%d MHz", client.BarracudaMinFrequencyMHz, client.BarracudaMaxFrequencyMHz)
+	if cfg.IFFrequencyMHz < client.BarracudaMinIFFrequencyMHz || cfg.IFFrequencyMHz > client.BarracudaMaxIFFrequencyMHz {
+		return fmt.Errorf("CW IF frequency must be %d..%d MHz", client.BarracudaMinIFFrequencyMHz, client.BarracudaMaxIFFrequencyMHz)
 	}
 	return validateCustomerAttenuation(cfg.AttenuationDB)
 }
 
 func validateCustomerSweep(cfg client.BarracudaSweepConfig) error {
-	if cfg.StartMHz < client.BarracudaMinFrequencyMHz || cfg.StartMHz > client.BarracudaMaxFrequencyMHz {
-		return fmt.Errorf("sweep start must be %d..%d MHz", client.BarracudaMinFrequencyMHz, client.BarracudaMaxFrequencyMHz)
+	if cfg.StartIFMHz < client.BarracudaMinIFFrequencyMHz || cfg.StartIFMHz > client.BarracudaMaxIFFrequencyMHz {
+		return fmt.Errorf("sweep IF start must be %d..%d MHz", client.BarracudaMinIFFrequencyMHz, client.BarracudaMaxIFFrequencyMHz)
 	}
-	if cfg.StopMHz < client.BarracudaMinFrequencyMHz || cfg.StopMHz > client.BarracudaMaxFrequencyMHz {
-		return fmt.Errorf("sweep stop must be %d..%d MHz", client.BarracudaMinFrequencyMHz, client.BarracudaMaxFrequencyMHz)
+	if cfg.StopIFMHz < client.BarracudaMinIFFrequencyMHz || cfg.StopIFMHz > client.BarracudaMaxIFFrequencyMHz {
+		return fmt.Errorf("sweep IF stop must be %d..%d MHz", client.BarracudaMinIFFrequencyMHz, client.BarracudaMaxIFFrequencyMHz)
 	}
-	if cfg.StopMHz <= cfg.StartMHz {
+	if cfg.StopIFMHz <= cfg.StartIFMHz {
 		return fmt.Errorf("sweep stop must be greater than start")
 	}
 	if cfg.SweepTime <= 0 || cfg.SweepTime%time.Microsecond != 0 {
@@ -252,19 +252,18 @@ func validateCustomerAttenuation(value float64) error {
 
 func printCustomerConfiguration(result *client.BarracudaConfiguration) {
 	if result.Mode == "cw" {
-		fmt.Printf("CW configured: %d MHz\n", result.StartMHz)
+		fmt.Printf("CW configured: %d MHz IF\n", result.StartIFMHz)
 	} else {
-		fmt.Printf("Sweep configured: %d to %d MHz in %s\n", result.StartMHz, result.StopMHz, result.SweepTime)
+		fmt.Printf("Sweep configured: %d to %d MHz IF in %s\n", result.StartIFMHz, result.StopIFMHz, result.SweepTime)
 	}
 	clock := "internal"
 	if result.ExternalClock {
 		clock = "external"
 	}
-	fmt.Printf("LO: %d MHz (fixed)\n", result.LOFrequencyMHz)
 	fmt.Printf("Clock: %s\n", clock)
 	fmt.Printf("Attenuation: %.2f dB\n", result.AttenuationDB)
 	fmt.Printf("Nominal output: %.2f dBm\n", result.NominalOutputDBm)
-	fmt.Printf("ADF lock: %v\n", result.ADFLocked)
+	fmt.Printf("Signal locked: %v\n", result.SignalLocked)
 }
 
 func printCustomerCWUsage() {
@@ -272,7 +271,7 @@ func printCustomerCWUsage() {
   rf-control [--ip ADDRESS | --usb DEVICE] cw --frequency MHz
              [--attenuation dB] [--clock internal|external]
 
-The LO is fixed at 9600 MHz. Frequency must be 9500..11500 MHz.
+Frequency is the customer IF and must be 50..1500 MHz.
 Attenuation defaults to 0 dB and accepts 0..31.75 dB in 0.25 dB steps.
 At 0 dB attenuation the calibrated nominal output is -25 dBm.`)
 }
@@ -283,21 +282,31 @@ func printCustomerSweepUsage() {
              --time DURATION [--attenuation dB]
              [--clock internal|external]
 
-The LO is fixed at 9600 MHz. Frequencies must be 9500..11500 MHz and stop
-must exceed start. DURATION requires units, for example 10s, 20ms, or 35us.
+Start and stop are customer IF frequencies from 50..1500 MHz; stop must exceed
+start. DURATION requires units, for example 10s, 20ms, or 35us.
 Attenuation defaults to 0 dB; the calibrated nominal output is -25 dBm.`)
 }
 
 func printBarracudaCustomerStatus(status *pb.GetStatusResponse) {
+	details := status.GetBarracuda()
+	const customerLOHz = uint64(client.BarracudaFixedLOMHz) * 1_000_000
+	customerPlan := details != nil && details.GetLmxRequestedFrequencyHz() == customerLOHz &&
+		details.GetLmxOutputPowerCode() == client.BarracudaCalibratedLMXPowerCode
 	clock := "internal"
 	if status.GetClockSourceExternal() {
 		clock = "external"
 	}
 	fmt.Printf("Clock               : %s\n", clock)
-	fmt.Printf("Clock locked        : %v\n", status.GetRefLocked())
-	fmt.Printf("ADF locked          : %v\n", status.GetPllLocked())
+	if status.GetClockSourceExternal() {
+		fmt.Printf("Reference locked    : %v\n", status.GetRefLocked())
+	}
+	fmt.Printf("Signal locked       : %v\n", status.GetPllLocked())
 	fmt.Printf("Attenuation         : %d dB (whole-dB readback)\n", status.GetAttenuationDb())
-	fmt.Printf("Nominal output      : %.2f dBm\n", client.BarracudaNominalOutputDBm-float64(status.GetAttenuationDb()))
+	if customerPlan {
+		fmt.Printf("Nominal output      : %.2f dBm\n", client.BarracudaNominalOutputDBm-float64(status.GetAttenuationDb()))
+	} else {
+		fmt.Println("Nominal output      : unavailable (run cw or sweep)")
+	}
 	if status.GetMcuTemperatureC() != 0 {
 		note := ""
 		if status.GetMcuTemperatureIsBootSample() {
@@ -305,7 +314,6 @@ func printBarracudaCustomerStatus(status *pb.GetStatusResponse) {
 		}
 		fmt.Printf("Controller temp     : %.1f C%s\n", status.GetMcuTemperatureC(), note)
 	}
-	details := status.GetBarracuda()
 	if details == nil {
 		fmt.Println("Barracuda details   : unavailable (older firmware)")
 		return
@@ -316,6 +324,24 @@ func printBarracudaCustomerStatus(status *pb.GetStatusResponse) {
 			mode = "continuous sweep"
 		}
 		fmt.Printf("Mode                : %s\n", mode)
+		ifFrequencyMHz := adf.GetFrequencyMhz() - client.BarracudaFixedLOMHz
+		if customerPlan && ifFrequencyMHz >= client.BarracudaMinIFFrequencyMHz && ifFrequencyMHz <= client.BarracudaMaxIFFrequencyMHz {
+			label := "IF frequency"
+			if adf.GetRampEnabled() {
+				label = "IF start"
+			}
+			fmt.Printf("%-20s: %d MHz\n", label, ifFrequencyMHz)
+		}
+	}
+}
+
+func printBarracudaEngineeringStatus(status *pb.GetStatusResponse) {
+	details := status.GetBarracuda()
+	if details == nil {
+		return
+	}
+	fmt.Println("--- Engineering synthesizer details ---")
+	if adf := details.GetAdfState(); adf != nil {
 		fmt.Printf("ADF start/frequency : %d MHz\n", adf.GetFrequencyMhz())
 	}
 	fmt.Printf("LO requested/actual : %.6f / %.6f MHz\n",
@@ -326,6 +352,6 @@ func printBarracudaCustomerStatus(status *pb.GetStatusResponse) {
 		details.GetLmxOutputPowerCode(), details.GetLmxOutputPowerManual())
 	if caps := details.GetCapabilities(); caps != nil {
 		fmt.Printf("ADF safe range      : %d..%d MHz\n",
-			client.BarracudaMinFrequencyMHz, caps.GetAdfMaxFrequencyMhz())
+			client.BarracudaFixedLOMHz+client.BarracudaMinIFFrequencyMHz, caps.GetAdfMaxFrequencyMhz())
 	}
 }

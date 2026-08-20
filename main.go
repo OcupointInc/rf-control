@@ -341,6 +341,14 @@ func parseOnOff(s string) (bool, error) {
 }
 
 func cmdStatus(args []string) error {
+	return cmdStatusView(args, false)
+}
+
+func cmdEngineeringStatus(args []string) error {
+	return cmdStatusView(args, true)
+}
+
+func cmdStatusView(args []string, engineering bool) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	common := &commonFlags{}
 	addCommonFlags(fs, common)
@@ -381,6 +389,9 @@ func cmdStatus(args []string) error {
 	}
 	if s.BoardType == "barracuda" {
 		printBarracudaCustomerStatus(s)
+		if engineering {
+			printBarracudaEngineeringStatus(s)
+		}
 		return nil
 	}
 
@@ -1606,13 +1617,13 @@ type batchConfig struct {
 // barracudaBatch mirrors the simplified customer cw/sweep interface for JSON
 // automation. It intentionally exposes no engineering-only waveform fields.
 type barracudaBatch struct {
-	Mode          string  `json:"mode"`
-	FrequencyMHz  *int    `json:"frequency_mhz"`
-	StartMHz      *int    `json:"start_mhz"`
-	StopMHz       *int    `json:"stop_mhz"`
-	SweepTime     string  `json:"sweep_time"`
-	AttenuationDB float64 `json:"attenuation_db"`
-	Clock         string  `json:"clock"`
+	Mode           string  `json:"mode"`
+	IFFrequencyMHz *int    `json:"if_frequency_mhz"`
+	StartIFMHz     *int    `json:"start_if_mhz"`
+	StopIFMHz      *int    `json:"stop_if_mhz"`
+	SweepTime      string  `json:"sweep_time"`
+	AttenuationDB  float64 `json:"attenuation_db"`
+	Clock          string  `json:"clock"`
 }
 
 // networkBatch mirrors the SaveConfigRequest network fields. Omitted fields are
@@ -1923,13 +1934,13 @@ func applyBatch(c *client.Client, cfg *batchConfig) (*applyResult, error) {
 			if _, err := c.ConfigureBarracudaCW(*cw); err != nil {
 				return fail("barracuda", err)
 			}
-			res.Applied = append(res.Applied, fmt.Sprintf("barracuda.cw=%dMHz", cw.FrequencyMHz))
+			res.Applied = append(res.Applied, fmt.Sprintf("barracuda.cw=%dMHz-IF", cw.IFFrequencyMHz))
 		} else {
 			if _, err := c.ConfigureBarracudaSweep(*sweep); err != nil {
 				return fail("barracuda", err)
 			}
 			res.Applied = append(res.Applied,
-				fmt.Sprintf("barracuda.sweep=%d-%dMHz/%s", sweep.StartMHz, sweep.StopMHz, sweep.SweepTime))
+				fmt.Sprintf("barracuda.sweep=%d-%dMHz-IF/%s", sweep.StartIFMHz, sweep.StopIFMHz, sweep.SweepTime))
 		}
 	}
 
@@ -2127,12 +2138,12 @@ Usage:
 
 Customer commands:
   cw --frequency MHz [--attenuation dB] [--clock internal|external]
-                         Generate a CW tone. LO is fixed at 9600 MHz.
+                         Generate a CW signal at the requested IF.
   sweep --start MHz --stop MHz --time DURATION
         [--attenuation dB] [--clock internal|external]
-                         Generate a continuous sawtooth sweep. LO is fixed at
-                         9600 MHz. Example duration: 10s, 20ms, or 35us.
-  status                 Show current RF, clock, attenuation, lock, and temperature.
+                         Generate a continuous IF sweep. Example duration:
+                         10s, 20ms, or 35us.
+  status                 Show current IF, clock, attenuation, lock, and temperature.
   list                   Discover Ethernet and USB devices.
   get                    Show device identity and network configuration.
   set-ip [flags]         Change network configuration.
@@ -2142,7 +2153,7 @@ Customer commands:
 Defaults and limits:
   Clock                  internal
   Attenuation            0 dB (nominal output -25 dBm)
-  Frequency range        9500..11500 MHz
+  IF frequency range     50..1500 MHz
   Attenuation range      0..31.75 dB in 0.25 dB steps
 
 Run 'rf-control cw --help' or 'rf-control sweep --help' for examples.
@@ -2159,13 +2170,13 @@ Usage:
 
 Commands:
   cw --frequency MHz [--attenuation dB] [--clock internal|external]
-                         Customer CW operation. The LO is fixed at 9600 MHz.
+                         Customer CW operation at 50..1500 MHz IF.
                          0 dB attenuation is nominally -25 dBm.
   sweep --start MHz --stop MHz --time DURATION
         [--attenuation dB] [--clock internal|external]
                          Customer continuous sawtooth sweep. DURATION includes
-                         units, for example 10s, 20ms, or 35us. The LO is fixed
-                         at 9600 MHz; 0 dB attenuation is nominally -25 dBm.
+                         units, for example 10s, 20ms, or 35us. Start/stop are
+                         50..1500 MHz IF; 0 dB attenuation is nominally -25 dBm.
   list                   Discover Ethernet and USB devices matching firmware.
   get                    Print the current device configuration.
   set-ip [flags]         Change one or more of: --address, --gateway,
@@ -2188,6 +2199,7 @@ Commands:
   status                 Print live RF status (channels, attenuation,
                          LO frequency, switch positions). On the SP8T
                          RF-switch board, prints the selected channel.
+  engineering-status     Print status plus Barracuda LO/synthesizer details.
   gpio-selftest          Run the firmware's control-GPIO diagnostic (alias:
                          selftest). Drives every control pin low then high and
                          reads the pad back, printing a per-pin pass/fail table.
@@ -2356,6 +2368,8 @@ func main() {
 		err = cmdApply(rest)
 	case "status":
 		err = cmdStatus(rest)
+	case "engineering-status":
+		err = cmdEngineeringStatus(rest)
 	case "gpio-selftest", "selftest":
 		err = cmdGpioSelfTest(rest)
 	case "set-att":

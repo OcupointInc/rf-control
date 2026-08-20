@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"io"
 	"math"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,17 +15,17 @@ import (
 
 func TestParseCustomerCW(t *testing.T) {
 	common, cfg, err := parseCustomerCW([]string{
-		"--ip", "192.168.1.253", "--frequency", "10000", "--attenuation", "6.25", "--clock", "external",
+		"--ip", "192.168.1.253", "--frequency", "400", "--attenuation", "6.25", "--clock", "external",
 	})
 	if err != nil {
 		t.Fatalf("parseCustomerCW: %v", err)
 	}
-	if common.ip != "192.168.1.253" || cfg.FrequencyMHz != 10000 ||
+	if common.ip != "192.168.1.253" || cfg.IFFrequencyMHz != 400 ||
 		cfg.AttenuationDB != 6.25 || !cfg.ExternalClock {
 		t.Errorf("common=%+v cfg=%+v", common, cfg)
 	}
 
-	_, defaults, err := parseCustomerCW([]string{"--frequency", "9500"})
+	_, defaults, err := parseCustomerCW([]string{"--frequency", "50"})
 	if err != nil {
 		t.Fatalf("defaults: %v", err)
 	}
@@ -34,12 +36,12 @@ func TestParseCustomerCW(t *testing.T) {
 
 func TestParseCustomerSweep(t *testing.T) {
 	_, cfg, err := parseCustomerSweep([]string{
-		"--start", "9600", "--stop", "11100", "--time", "10s",
+		"--start", "50", "--stop", "1500", "--time", "10s",
 	})
 	if err != nil {
 		t.Fatalf("parseCustomerSweep: %v", err)
 	}
-	if cfg.StartMHz != 9600 || cfg.StopMHz != 11100 || cfg.SweepTime != 10*time.Second ||
+	if cfg.StartIFMHz != 50 || cfg.StopIFMHz != 1500 || cfg.SweepTime != 10*time.Second ||
 		cfg.AttenuationDB != 0 || cfg.ExternalClock {
 		t.Errorf("cfg = %+v", cfg)
 	}
@@ -52,35 +54,35 @@ func TestCustomerFlagValidation(t *testing.T) {
 		want string
 	}{
 		{"CW frequency required", func() error { _, _, err := parseCustomerCW(nil); return err }, "requires --frequency"},
-		{"CW range", func() error { _, _, err := parseCustomerCW([]string{"--frequency", "9000"}); return err }, "9500..11500"},
-		{"CW integer wrap", func() error { _, _, err := parseCustomerCW([]string{"--frequency", "4294977296"}); return err }, "9500..11500"},
+		{"CW range", func() error { _, _, err := parseCustomerCW([]string{"--frequency", "49"}); return err }, "50..1500"},
+		{"CW integer wrap", func() error { _, _, err := parseCustomerCW([]string{"--frequency", "4294977296"}); return err }, "50..1500"},
 		{"clock", func() error {
-			_, _, err := parseCustomerCW([]string{"--frequency", "10000", "--clock", "gps"})
+			_, _, err := parseCustomerCW([]string{"--frequency", "400", "--clock", "gps"})
 			return err
 		}, "internal or external"},
 		{"attenuation range", func() error {
-			_, _, err := parseCustomerCW([]string{"--frequency", "10000", "--attenuation", "32"})
+			_, _, err := parseCustomerCW([]string{"--frequency", "400", "--attenuation", "32"})
 			return err
 		}, "0..31.75"},
 		{"attenuation step", func() error {
-			_, _, err := parseCustomerCW([]string{"--frequency", "10000", "--attenuation", "0.1"})
+			_, _, err := parseCustomerCW([]string{"--frequency", "400", "--attenuation", "0.1"})
 			return err
 		}, "0.25 dB steps"},
 		{"attenuation NaN", func() error {
-			_, _, err := parseCustomerCW([]string{"--frequency", "10000", "--attenuation", "NaN"})
+			_, _, err := parseCustomerCW([]string{"--frequency", "400", "--attenuation", "NaN"})
 			return err
 		}, "0..31.75"},
 		{"sweep required", func() error { _, _, err := parseCustomerSweep(nil); return err }, "requires --start, --stop, and --time"},
 		{"sweep order", func() error {
-			_, _, err := parseCustomerSweep([]string{"--start", "11000", "--stop", "10000", "--time", "1s"})
+			_, _, err := parseCustomerSweep([]string{"--start", "1000", "--stop", "500", "--time", "1s"})
 			return err
 		}, "greater than start"},
 		{"sweep units", func() error {
-			_, _, err := parseCustomerSweep([]string{"--start", "9600", "--stop", "11100", "--time", "10"})
+			_, _, err := parseCustomerSweep([]string{"--start", "50", "--stop", "1500", "--time", "10"})
 			return err
 		}, "include a unit"},
 		{"sweep resolution", func() error {
-			_, _, err := parseCustomerSweep([]string{"--start", "9600", "--stop", "11100", "--time", "1ns"})
+			_, _, err := parseCustomerSweep([]string{"--start", "50", "--stop", "1500", "--time", "1ns"})
 			return err
 		}, "whole microseconds"},
 	}
@@ -103,7 +105,7 @@ func TestCustomerFlagValidation(t *testing.T) {
 
 func TestCustomerPowerEstimate(t *testing.T) {
 	result := &client.BarracudaConfiguration{
-		Mode: "cw", LOFrequencyMHz: 9600, StartMHz: 10000,
+		Mode: "cw", StartIFMHz: 400, StopIFMHz: 400,
 		AttenuationDB: 6.25, NominalOutputDBm: client.BarracudaNominalOutputDBm - 6.25,
 	}
 	if math.Abs(result.NominalOutputDBm-(-31.25)) > 1e-9 {
@@ -112,10 +114,10 @@ func TestCustomerPowerEstimate(t *testing.T) {
 }
 
 func TestBarracudaBatchValidation(t *testing.T) {
-	frequency, start, stop := 10000, 9600, 11100
+	frequency, start, stop := 400, 50, 1500
 	valid := []*batchConfig{
-		{Barracuda: &barracudaBatch{Mode: "cw", FrequencyMHz: &frequency}},
-		{Barracuda: &barracudaBatch{Mode: "sweep", StartMHz: &start, StopMHz: &stop, SweepTime: "10s", Clock: "external"}},
+		{Barracuda: &barracudaBatch{Mode: "cw", IFFrequencyMHz: &frequency}},
+		{Barracuda: &barracudaBatch{Mode: "sweep", StartIFMHz: &start, StopIFMHz: &stop, SweepTime: "10s", Clock: "external"}},
 	}
 	for _, cfg := range valid {
 		if err := cfg.validate(); err != nil {
@@ -123,14 +125,14 @@ func TestBarracudaBatchValidation(t *testing.T) {
 		}
 	}
 
-	badFrequency, wrappedFrequency := 9000, 4294977296
+	badFrequency, wrappedFrequency := 49, 4294977296
 	invalid := []batchConfig{
 		{Barracuda: &barracudaBatch{Mode: "cw"}},
-		{Barracuda: &barracudaBatch{Mode: "cw", FrequencyMHz: &badFrequency}},
-		{Barracuda: &barracudaBatch{Mode: "cw", FrequencyMHz: &wrappedFrequency}},
-		{Barracuda: &barracudaBatch{Mode: "sweep", StartMHz: &start, StopMHz: &stop}},
-		{Barracuda: &barracudaBatch{Mode: "pulse", FrequencyMHz: &frequency}},
-		{Barracuda: &barracudaBatch{Mode: "cw", FrequencyMHz: &frequency}, AttenuationDb: ptrInt(1)},
+		{Barracuda: &barracudaBatch{Mode: "cw", IFFrequencyMHz: &badFrequency}},
+		{Barracuda: &barracudaBatch{Mode: "cw", IFFrequencyMHz: &wrappedFrequency}},
+		{Barracuda: &barracudaBatch{Mode: "sweep", StartIFMHz: &start, StopIFMHz: &stop}},
+		{Barracuda: &barracudaBatch{Mode: "pulse", IFFrequencyMHz: &frequency}},
+		{Barracuda: &barracudaBatch{Mode: "cw", IFFrequencyMHz: &frequency}, AttenuationDb: ptrInt(1)},
 	}
 	for _, cfg := range invalid {
 		if err := cfg.validate(); err == nil {
@@ -149,4 +151,64 @@ func TestBarracudaStatusJSONIncludesShippingTelemetry(t *testing.T) {
 		status.Barracuda.GetLmxOutputPowerCode() != 50 || !status.PLLLocked || !status.RefLocked {
 		t.Errorf("status = %+v", status)
 	}
+}
+
+func TestCustomerOutputUsesIFAndHidesSynthesizers(t *testing.T) {
+	status := &pb.GetStatusResponse{
+		BoardType: "barracuda", PllLocked: true, AttenuationDb: 6,
+		Barracuda: &pb.BarracudaDiagnostics{
+			LmxRequestedFrequencyHz: 9_600_000_000,
+			LmxActualFrequencyHz:    9_600_000_000,
+			LmxLocked:               true,
+			LmxOutputPowerCode:      50,
+			AdfState:                &pb.Adf4159State{FrequencyMhz: 10_000},
+		},
+	}
+	out := captureStdout(t, func() { printBarracudaCustomerStatus(status) })
+	if !strings.Contains(out, "IF frequency        : 400 MHz") {
+		t.Errorf("customer status did not report IF frequency:\n%s", out)
+	}
+	for _, hidden := range []string{"9600", "LO requested", "LMX", "ADF"} {
+		if strings.Contains(out, hidden) {
+			t.Errorf("customer status exposed %q:\n%s", hidden, out)
+		}
+	}
+
+	status.Barracuda.LmxRequestedFrequencyHz = 10_000_000_000
+	out = captureStdout(t, func() { printBarracudaCustomerStatus(status) })
+	if strings.Contains(out, "IF frequency") || !strings.Contains(out, "Nominal output      : unavailable") {
+		t.Errorf("non-customer internal plan produced a customer estimate:\n%s", out)
+	}
+
+	out = captureStdout(t, func() {
+		printCustomerConfiguration(&client.BarracudaConfiguration{
+			Mode: "cw", StartIFMHz: 400, StopIFMHz: 400, SignalLocked: true,
+		})
+	})
+	if !strings.Contains(out, "CW configured: 400 MHz IF") || strings.Contains(out, "LO") {
+		t.Errorf("customer configuration output =\n%s", out)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = write
+	defer func() { os.Stdout = original }()
+	fn()
+	if err := write.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := read.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
