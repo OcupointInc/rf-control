@@ -80,7 +80,7 @@ const state = {
   tab: 'bringup' as Tab,
   busy: false,
   scanning: false,
-  scanMessage: 'Waiting for device scan',
+  scanMessage: 'Press Scan for devices to begin',
   scanKind: 'idle' as 'idle' | 'working' | 'success' | 'empty' | 'error',
   notice: '' as string,
   noticeKind: 'info' as 'info' | 'success' | 'error',
@@ -508,7 +508,6 @@ async function connectDevice(endpoint: Endpoint): Promise<void> {
   state.networkPlan = null;
   state.networkError = '';
   render();
-  void discoverDevices();
 }
 
 async function disconnectDevice(): Promise<void> {
@@ -613,8 +612,9 @@ async function applyIPAddress(): Promise<void> {
   state.snapshot = null;
   state.networkInput = '';
   state.networkPlan = null;
+  state.scanMessage = `Device moved to ${plan.ipAddress} · press Scan to rediscover it`;
+  state.scanKind = 'idle';
   render();
-  window.setTimeout(() => void discoverDevices(), 4500);
 }
 
 function boardName(board: string): string {
@@ -630,5 +630,4 @@ function cleanEnum(value: string): string {
 }
 
 render();
-void discoverDevices();
 window.setInterval(() => void refreshStatus(false), 3000);
