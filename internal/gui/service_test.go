@@ -204,6 +204,20 @@ func airsharkFake() *fakeDevice {
 	}
 }
 
+func blackCanyonFake() *fakeDevice {
+	return &fakeDevice{
+		config: &pb.GetConfigResponse{
+			StaticIp: []byte{127, 0, 0, 1}, StaticGateway: []byte{127, 0, 0, 1},
+			StaticSubnet: []byte{255, 0, 0, 0}, MdnsHostname: "black-canyon-mock",
+			MacAddress: []byte{0x02, 0, 0, 0, 0, 5}, SerialNumber: "BC-MOCK-001",
+			FirmwareVersion: "mock-1.0.0", UniqueBoardId: "MOCK-BLACK-CANYON",
+		},
+		status: &pb.GetStatusResponse{
+			BoardType: "bc", AttenuationDb: 3, ChannelsEnabled: true, CalibrationEnabled: false,
+		},
+	}
+}
+
 func serviceWithFake(fake *fakeDevice) *Service {
 	service := NewService()
 	service.probeUSB = true
@@ -467,6 +481,104 @@ func TestAirsharkGUIServiceAgainstMockFirmware(t *testing.T) {
 	if !snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled ||
 		snapshot.Status.AttenuationDB != 17 || snapshot.Status.CalAttenuationDB != 10 ||
 		snapshot.Status.AirsharkBand != "1800-2700" || snapshot.Status.LOFrequencyMHz != 3500 {
+		t.Fatalf("wire readback = %+v", snapshot.Status)
+	}
+}
+
+func TestValidateBlackCanyonProfileMatchesCLIApplyShape(t *testing.T) {
+	attenuation := int32(11)
+	channels, calEnabled := true, true
+	profile := TuningProfile{
+		AttenuationDB: &attenuation, ChannelsEnabled: &channels, CalibrationEnabled: &calEnabled,
+	}
+	if err := ValidateTuningProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range [][]byte{
+		[]byte(`"attenuation_db":11`), []byte(`"channels_enabled":true`), []byte(`"cal_enabled":true`),
+	} {
+		if !bytes.Contains(raw, expected) {
+			t.Fatalf("profile JSON %s does not contain %s", raw, expected)
+		}
+	}
+	for _, unavailable := range [][]byte{[]byte(`"cal_attenuation_db"`), []byte(`"cal_source_internal"`), []byte(`"rf_band"`)} {
+		if bytes.Contains(raw, unavailable) {
+			t.Fatalf("Black Canyon profile JSON %s contains unavailable field %s", raw, unavailable)
+		}
+	}
+}
+
+func TestConfigureBlackCanyonAppliesCompleteStateWithSafePowerOrder(t *testing.T) {
+	fake := blackCanyonFake()
+	service := serviceWithFake(fake)
+	snapshot, err := service.Connect(Endpoint{Kind: "usb", Address: "COM9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.CustomerControl || !snapshot.Status.BlackCanyon || snapshot.Status.BoardLabel != "Black Canyon" {
+		t.Fatalf("Black Canyon did not receive customer controls: %+v", snapshot)
+	}
+
+	snapshot, err = service.ConfigureBlackCanyon(BlackCanyonRequest{
+		AttenuationDB: 15, ChannelsEnabled: false, CalibrationEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOff := []string{"power", "attenuation", "path"}
+	if fmt.Sprint(fake.whalepodCalls) != fmt.Sprint(wantOff) {
+		t.Fatalf("power-off call order = %v, want %v", fake.whalepodCalls, wantOff)
+	}
+	if snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled || snapshot.Status.AttenuationDB != 15 {
+		t.Fatalf("applied Black Canyon state = %+v", snapshot.Status)
+	}
+
+	fake.whalepodCalls = nil
+	_, err = service.ConfigureBlackCanyon(BlackCanyonRequest{
+		AttenuationDB: 6, ChannelsEnabled: true, CalibrationEnabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOn := []string{"attenuation", "path", "power"}
+	if fmt.Sprint(fake.whalepodCalls) != fmt.Sprint(wantOn) {
+		t.Fatalf("power-on call order = %v, want %v", fake.whalepodCalls, wantOn)
+	}
+}
+
+func TestBlackCanyonGUIServiceAgainstMockFirmware(t *testing.T) {
+	firmware, err := mockfirmware.ListenBlackCanyon("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = firmware.Serve() }()
+	defer firmware.Close()
+
+	port := firmware.Addr().(*net.TCPAddr).Port
+	service := NewService()
+	snapshot, err := service.Connect(Endpoint{Kind: "ethernet", Address: "127.0.0.1", Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status.BoardLabel != "Black Canyon" || !snapshot.Status.BlackCanyon || snapshot.Network.Firmware != "mock-1.0.0" {
+		t.Fatalf("mock firmware identity = %+v", snapshot)
+	}
+
+	snapshot, err = service.ConfigureBlackCanyon(BlackCanyonRequest{
+		AttenuationDB: 21, ChannelsEnabled: true, CalibrationEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{"attenuation", "path", "power"}
+	if fmt.Sprint(firmware.Calls()) != fmt.Sprint(wantCalls) {
+		t.Fatalf("wire requests = %v, want %v", firmware.Calls(), wantCalls)
+	}
+	if !snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled || snapshot.Status.AttenuationDB != 21 {
 		t.Fatalf("wire readback = %+v", snapshot.Status)
 	}
 }

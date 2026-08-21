@@ -2,6 +2,7 @@ import './style.css';
 
 import {
   ConfigureAirshark,
+  ConfigureBlackCanyon,
   ConfigureCW,
   ConfigureSweep,
   ConfigureWhalepod,
@@ -45,6 +46,7 @@ type DeviceStatus = {
   barracuda: boolean;
   whalepod: boolean;
   airshark: boolean;
+  blackCanyon: boolean;
   airsharkBand: string;
   mode: string;
   ifFrequencyMHz: number;
@@ -140,6 +142,11 @@ const state = {
     channelsEnabled: false,
     calibrationEnabled: false,
   },
+  blackCanyonControl: {
+    attenuationDb: 0,
+    channelsEnabled: false,
+    calibrationEnabled: false,
+  },
   networkInput: '',
   networkPlan: null as NetworkPlan | null,
   networkError: '',
@@ -181,7 +188,7 @@ const statusStrip = (status: DeviceStatus): string => `
   <div class="status-strip">
     <span class="chip good"><i></i>Connected</span>
     ${status.barracuda ? `<span class="chip ${status.rfEnabled ? 'good' : 'bad'}"><i></i>RF: ${status.rfEnabled ? 'On' : 'Off'}</span>` : ''}
-    ${status.whalepod || status.airshark ? `<span class="chip ${status.channelsEnabled ? 'good' : 'bad'}"><i></i>Frontends: ${status.channelsEnabled ? 'On' : 'Off'}</span>` : ''}
+    ${status.whalepod || status.airshark || status.blackCanyon ? `<span class="chip ${status.channelsEnabled ? 'good' : 'bad'}"><i></i>Frontends: ${status.channelsEnabled ? 'On' : 'Off'}</span>` : ''}
     ${lockChip('Signal', status.signalLockApplicable, status.signalLocked)}
     ${lockChip('External reference', status.referenceLockApplicable, status.referenceLocked)}
     ${status.temperatureAvailable ? `<span class="chip neutral">${status.temperatureC.toFixed(1)} °C${status.temperatureBootSample ? ' boot sample' : ''}</span>` : ''}
@@ -265,6 +272,7 @@ function renderTabs(snapshot: Snapshot): string {
 function renderControl(snapshot: Snapshot): string {
   if (snapshot.status.whalepod) return renderWhalepodControl(snapshot);
   if (snapshot.status.airshark) return renderAirsharkControl(snapshot);
+  if (snapshot.status.blackCanyon) return renderBlackCanyonControl(snapshot);
   return renderBarracudaControl(snapshot);
 }
 
@@ -311,7 +319,8 @@ function renderStatus(snapshot: Snapshot): string {
   const status = snapshot.status;
   const boardSpecific = status.barracuda ? renderBarracudaFacts(status)
     : status.whalepod ? renderWhalepodFacts(status)
-    : status.airshark ? renderAirsharkFacts(status) : renderGenericFacts(status);
+    : status.airshark ? renderAirsharkFacts(status)
+    : status.blackCanyon ? renderBlackCanyonFacts(status) : renderGenericFacts(status);
   return `
     <section class="content">
       <div class="section-intro"><div><p class="eyebrow">Read-only telemetry</p><h2>Device status</h2></div><button class="secondary" id="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh now</button></div>
@@ -444,6 +453,11 @@ function bindEvents(): void {
     readAirsharkInputs();
     void applyAirsharkControl();
   });
+  document.querySelector<HTMLFormElement>('#black-canyon-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    readBlackCanyonInputs();
+    void applyBlackCanyonControl();
+  });
   document.querySelector<HTMLInputElement>('#rf-enabled')?.addEventListener('change', (event) => {
     state.control.rfEnabled = (event.target as HTMLInputElement).checked;
     render();
@@ -478,6 +492,16 @@ function bindEvents(): void {
     state.airsharkControl.calibrationEnabled = input.value === 'cal';
     render();
   }));
+  document.querySelector<HTMLInputElement>('#black-canyon-frontends-enabled')?.addEventListener('change', (event) => {
+    readBlackCanyonInputs();
+    state.blackCanyonControl.channelsEnabled = (event.target as HTMLInputElement).checked;
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>('input[name="black-canyon-path"]').forEach((input) => input.addEventListener('change', () => {
+    readBlackCanyonInputs();
+    state.blackCanyonControl.calibrationEnabled = input.value === 'cal';
+    render();
+  }));
   document.querySelector('#load-tuning')?.addEventListener('click', () => void loadTuningProfile());
   document.querySelector('#export-tuning')?.addEventListener('click', () => void exportTuningProfile());
   document.querySelectorAll<HTMLInputElement>('input[name="clock"]').forEach((input) => input.addEventListener('change', () => {
@@ -500,6 +524,10 @@ function readControlInputs(): void {
   }
   if (state.snapshot?.status.airshark) {
     readAirsharkInputs();
+    return;
+  }
+  if (state.snapshot?.status.blackCanyon) {
+    readBlackCanyonInputs();
     return;
   }
   const numberValue = (selector: string, fallback: number): number => {
@@ -647,6 +675,44 @@ function renderAirsharkFacts(status: DeviceStatus): string {
   </dl>`;
 }
 
+function readBlackCanyonInputs(): void {
+  const attenuation = document.querySelector<HTMLInputElement>('#black-canyon-attenuation');
+  if (attenuation) state.blackCanyonControl.attenuationDb = Number(attenuation.value);
+  state.blackCanyonControl.channelsEnabled = document.querySelector<HTMLInputElement>('#black-canyon-frontends-enabled')?.checked
+    ?? state.blackCanyonControl.channelsEnabled;
+}
+
+function renderBlackCanyonControl(snapshot: Snapshot): string {
+  const control = state.blackCanyonControl;
+  const status = snapshot.status;
+  const powerPending = control.channelsEnabled !== status.channelsEnabled;
+  const anyPending = powerPending
+    || control.attenuationDb !== status.attenuationDb
+    || control.calibrationEnabled !== status.calibrationEnabled;
+  return `
+    <section class="content control-layout">
+      <div class="control-card">
+        <div class="section-intro"><div><p class="eyebrow">Black Canyon RF frontend</p><h2>Mode</h2></div><label class="rf-slider-control ${control.channelsEnabled ? 'on' : 'off'} ${powerPending ? 'pending' : ''}"><span><b>FRONTEND ${control.channelsEnabled ? 'ON' : 'OFF'}</b><small>${powerPending ? 'Change pending' : 'Applied state'}</small></span><input id="black-canyon-frontends-enabled" type="checkbox" ${control.channelsEnabled ? 'checked' : ''} ${state.busy ? 'disabled' : ''}><i aria-hidden="true"></i></label></div>
+        <form id="black-canyon-form">
+          <div class="field-row black-canyon-settings">
+            <div class="field"><label for="black-canyon-attenuation">Frontend attenuation</label><div class="input-unit"><input id="black-canyon-attenuation" type="number" min="0" max="31" step="1" value="${control.attenuationDb}" required><span>dB</span></div><small>Digital attenuation, 0–31 dB.</small></div>
+            <fieldset class="field"><legend>RF path</legend><div class="radio-row"><label><input type="radio" name="black-canyon-path" value="through" ${!control.calibrationEnabled ? 'checked' : ''}>Through</label><label><input type="radio" name="black-canyon-path" value="cal" ${control.calibrationEnabled ? 'checked' : ''}>Cal</label></div><small>Select the through path or route the calibration input.</small></fieldset>
+          </div>
+          <div class="form-actions"><button class="primary large" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Applying…' : 'Apply'}</button><div class="profile-actions"><button class="secondary" type="button" id="load-tuning" ${state.busy ? 'disabled' : ''}>Load</button><button class="secondary export-profile" type="button" id="export-tuning" ${state.busy ? 'disabled' : ''}>Export</button></div><small>${anyPending ? 'Settings changed · press Apply to update hardware.' : 'Export saves this applied state as CLI-ready JSON.'}</small></div>
+        </form>
+      </div>
+      <aside class="live-panel"><p class="eyebrow">Live state</p><h3>${status.calibrationEnabled ? 'CAL' : 'THROUGH'}</h3>${renderBlackCanyonFacts(status)}</aside>
+    </section>`;
+}
+
+function renderBlackCanyonFacts(status: DeviceStatus): string {
+  return `<dl class="facts">
+    <div><dt>Frontend power</dt><dd class="${status.channelsEnabled ? 'text-good' : 'text-bad'}">${status.channelsEnabled ? 'On' : 'Off'}</dd></div>
+    <div><dt>Frontend attenuation</dt><dd>${status.attenuationDb.toFixed(0)} dB</dd></div>
+    <div><dt>RF path</dt><dd>${status.calibrationEnabled ? 'Cal' : 'Through'}</dd></div>
+  </dl>`;
+}
+
 function clearNotice(): void {
   if (!state.notice) return;
   state.notice = '';
@@ -731,6 +797,11 @@ async function connectDevice(endpoint: Endpoint): Promise<void> {
     state.airsharkControl.calAttenuationDb = result.status.calAttenuationDb;
     state.airsharkControl.channelsEnabled = result.status.channelsEnabled;
     state.airsharkControl.calibrationEnabled = result.status.calibrationEnabled;
+  }
+  if (result.status.blackCanyon) {
+    state.blackCanyonControl.attenuationDb = result.status.attenuationDb;
+    state.blackCanyonControl.channelsEnabled = result.status.channelsEnabled;
+    state.blackCanyonControl.calibrationEnabled = result.status.calibrationEnabled;
   }
   render();
 }
@@ -818,6 +889,23 @@ async function applyAirsharkControl(): Promise<void> {
   render();
 }
 
+async function applyBlackCanyonControl(): Promise<void> {
+  const control = state.blackCanyonControl;
+  const message = `Black Canyon configuration applied · frontend ${control.channelsEnabled ? 'on' : 'off'} · ${control.calibrationEnabled ? 'cal' : 'through'} path`;
+  const result = await withAction(message, () => ConfigureBlackCanyon({
+    attenuationDb: control.attenuationDb,
+    channelsEnabled: control.channelsEnabled,
+    calibrationEnabled: control.calibrationEnabled,
+  }) as Promise<Snapshot>);
+  if (result) {
+    state.snapshot = result;
+    state.blackCanyonControl.attenuationDb = result.status.attenuationDb;
+    state.blackCanyonControl.channelsEnabled = result.status.channelsEnabled;
+    state.blackCanyonControl.calibrationEnabled = result.status.calibrationEnabled;
+  }
+  render();
+}
+
 function tuningProfileFromControl(): TuningProfile {
   if (state.snapshot?.status.whalepod) {
     const control = state.whalepodControl;
@@ -835,6 +923,14 @@ function tuningProfileFromControl(): TuningProfile {
       rf_band: control.band,
       attenuation_db: control.attenuationDb,
       cal_attenuation_db: control.calAttenuationDb,
+      channels_enabled: control.channelsEnabled,
+      cal_enabled: control.calibrationEnabled,
+    };
+  }
+  if (state.snapshot?.status.blackCanyon) {
+    const control = state.blackCanyonControl;
+    return {
+      attenuation_db: control.attenuationDb,
       channels_enabled: control.channelsEnabled,
       cal_enabled: control.calibrationEnabled,
     };
@@ -863,7 +959,8 @@ async function exportTuningProfile(): Promise<void> {
   state.notice = '';
   render();
   try {
-    const path = await SaveTuningProfile(new GoModels.TuningProfile(tuningProfileFromControl())) as string;
+    const product = state.snapshot?.status.blackCanyon ? 'black-canyon' : '';
+    const path = await SaveTuningProfile(new GoModels.TuningProfile(tuningProfileFromControl()), product) as string;
     if (path) {
       state.notice = 'Current configuration exported as CLI-ready JSON';
       state.noticeKind = 'success';
@@ -903,6 +1000,14 @@ async function loadTuningProfile(): Promise<void> {
       control.band = profile.rf_band;
       control.attenuationDb = profile.attenuation_db ?? control.attenuationDb;
       control.calAttenuationDb = profile.cal_attenuation_db ?? control.calAttenuationDb;
+      control.channelsEnabled = profile.channels_enabled ?? control.channelsEnabled;
+      control.calibrationEnabled = profile.cal_enabled ?? control.calibrationEnabled;
+    } else if (state.snapshot?.status.blackCanyon) {
+      if (profile.barracuda) throw new Error('This is a Barracuda profile. Connect a Barracuda to load it.');
+      if (profile.rf_band) throw new Error('This is an Airshark profile. Connect an Airshark to load it.');
+      if (profile.cal_attenuation_db !== undefined || profile.cal_source_internal !== undefined) throw new Error('This profile contains controls unavailable on Black Canyon.');
+      const control = state.blackCanyonControl;
+      control.attenuationDb = profile.attenuation_db ?? control.attenuationDb;
       control.channelsEnabled = profile.channels_enabled ?? control.channelsEnabled;
       control.calibrationEnabled = profile.cal_enabled ?? control.calibrationEnabled;
     } else {

@@ -6,6 +6,10 @@ export function ConfigureAirshark(arg1) {
   return window['go']['main']['App']['ConfigureAirshark'](arg1);
 }
 
+export function ConfigureBlackCanyon(arg1) {
+  return window['go']['main']['App']['ConfigureBlackCanyon'](arg1);
+}
+
 export function ConfigureCW(arg1) {
   return window['go']['main']['App']['ConfigureCW'](arg1);
 }
@@ -42,8 +46,8 @@ export function PreviewNetwork(arg1) {
   return window['go']['main']['App']['PreviewNetwork'](arg1);
 }
 
-export function SaveTuningProfile(arg1) {
-  return window['go']['main']['App']['SaveTuningProfile'](arg1);
+export function SaveTuningProfile(arg1, arg2) {
+  return window['go']['main']['App']['SaveTuningProfile'](arg1, arg2);
 }
 
 export function SetIPAddress(arg1) {

@@ -66,6 +66,7 @@ type DeviceStatus struct {
 	Barracuda               bool    `json:"barracuda"`
 	Whalepod                bool    `json:"whalepod"`
 	Airshark                bool    `json:"airshark"`
+	BlackCanyon             bool    `json:"blackCanyon"`
 	AirsharkBand            string  `json:"airsharkBand"`
 	Mode                    string  `json:"mode"`
 	IFFrequencyMHz          int32   `json:"ifFrequencyMHz"`
@@ -139,6 +140,14 @@ type AirsharkRequest struct {
 	CalAttenuationDB   int32  `json:"calAttenuationDb"`
 	ChannelsEnabled    bool   `json:"channelsEnabled"`
 	CalibrationEnabled bool   `json:"calibrationEnabled"`
+}
+
+// BlackCanyonRequest is the complete pending Black Canyon (firmware board
+// type "bc") state. Changes are written only when Apply is pressed.
+type BlackCanyonRequest struct {
+	AttenuationDB      int32 `json:"attenuationDb"`
+	ChannelsEnabled    bool  `json:"channelsEnabled"`
+	CalibrationEnabled bool  `json:"calibrationEnabled"`
 }
 
 // TuningProfile is intentionally identical to the CLI `apply` command's
@@ -688,6 +697,38 @@ func (s *Service) ConfigureAirshark(request AirsharkRequest) (DeviceSnapshot, er
 	return s.refreshLocked()
 }
 
+// ConfigureBlackCanyon applies the complete frontend state. Power-off is sent
+// first when requested; power-on is sent last so the attenuator and signal path
+// settle before an enabled frontend can pass RF.
+func (s *Service) ConfigureBlackCanyon(request BlackCanyonRequest) (DeviceSnapshot, error) {
+	if request.AttenuationDB < 0 || request.AttenuationDB > 31 {
+		return DeviceSnapshot{}, fmt.Errorf("frontend attenuation must be 0–31 dB")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireBlackCanyonLocked(); err != nil {
+		return DeviceSnapshot{}, err
+	}
+	if !request.ChannelsEnabled {
+		if err := s.active.client.SetChannelsEnabled(false); err != nil {
+			return DeviceSnapshot{}, fmt.Errorf("turn frontend power off: %w", err)
+		}
+	}
+	if err := s.active.client.SetAttenuation(request.AttenuationDB); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set frontend attenuation: %w", err)
+	}
+	if err := s.active.client.SetCalEnabled(request.CalibrationEnabled); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("select RF path: %w", err)
+	}
+	if request.ChannelsEnabled {
+		if err := s.active.client.SetChannelsEnabled(true); err != nil {
+			return DeviceSnapshot{}, fmt.Errorf("turn frontend power on: %w", err)
+		}
+	}
+	return s.refreshLocked()
+}
+
 // MaximumAttenuation applies the Barracuda DSA's 31.75 dB maximum. It does not
 // claim to electrically disconnect the output; the UI labels it accordingly.
 func (s *Service) MaximumAttenuation() (DeviceSnapshot, error) {
@@ -882,6 +923,16 @@ func (s *Service) requireAirsharkLocked() error {
 	return nil
 }
 
+func (s *Service) requireBlackCanyonLocked() error {
+	if s.active == nil {
+		return fmt.Errorf("no device is connected")
+	}
+	if s.active.status.GetBoardType() != "bc" {
+		return fmt.Errorf("Black Canyon controls are unavailable for %s", boardLabel(s.active.status.GetBoardType()))
+	}
+	return nil
+}
+
 func (s *Service) snapshotLocked() DeviceSnapshot {
 	if s.active == nil {
 		return DeviceSnapshot{}
@@ -890,7 +941,7 @@ func (s *Service) snapshotLocked() DeviceSnapshot {
 		Connected: true, Endpoint: s.active.endpoint,
 		Network:         networkFromConfig(s.active.config),
 		Status:          statusFromResponse(s.active),
-		CustomerControl: s.active.status.GetBoardType() == "barracuda" || s.active.status.GetBoardType() == "whalepod" || s.active.status.GetBoardType() == "straps",
+		CustomerControl: s.active.status.GetBoardType() == "barracuda" || s.active.status.GetBoardType() == "whalepod" || s.active.status.GetBoardType() == "straps" || s.active.status.GetBoardType() == "bc",
 	}
 }
 
@@ -898,7 +949,7 @@ func statusFromResponse(current *session) DeviceStatus {
 	status := current.status
 	board := status.GetBoardType()
 	out := DeviceStatus{
-		BoardType: board, BoardLabel: boardLabel(board), Barracuda: board == "barracuda", Whalepod: board == "whalepod", Airshark: board == "straps",
+		BoardType: board, BoardLabel: boardLabel(board), Barracuda: board == "barracuda", Whalepod: board == "whalepod", Airshark: board == "straps", BlackCanyon: board == "bc",
 		AttenuationDB:         float64(status.GetAttenuationDb()),
 		TemperatureAvailable:  status.GetMcuTemperatureC() != 0,
 		TemperatureC:          float64(status.GetMcuTemperatureC()),

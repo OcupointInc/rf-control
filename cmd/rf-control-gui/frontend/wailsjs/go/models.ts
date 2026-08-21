@@ -46,6 +46,22 @@ export namespace gui {
 	        this.rf_enabled = source["rf_enabled"];
 	    }
 	}
+	export class BlackCanyonRequest {
+	    attenuationDb: number;
+	    channelsEnabled: boolean;
+	    calibrationEnabled: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new BlackCanyonRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.attenuationDb = source["attenuationDb"];
+	        this.channelsEnabled = source["channelsEnabled"];
+	        this.calibrationEnabled = source["calibrationEnabled"];
+	    }
+	}
 	export class CWRequest {
 	    frequencyMHz: number;
 	    attenuation: number;
@@ -70,6 +86,7 @@ export namespace gui {
 	    barracuda: boolean;
 	    whalepod: boolean;
 	    airshark: boolean;
+	    blackCanyon: boolean;
 	    airsharkBand: string;
 	    mode: string;
 	    ifFrequencyMHz: number;
@@ -109,6 +126,7 @@ export namespace gui {
 	        this.barracuda = source["barracuda"];
 	        this.whalepod = source["whalepod"];
 	        this.airshark = source["airshark"];
+	        this.blackCanyon = source["blackCanyon"];
 	        this.airsharkBand = source["airsharkBand"];
 	        this.mode = source["mode"];
 	        this.ifFrequencyMHz = source["ifFrequencyMHz"];

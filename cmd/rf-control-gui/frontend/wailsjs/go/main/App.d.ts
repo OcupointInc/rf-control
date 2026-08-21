@@ -4,6 +4,8 @@ import {gui} from '../models';
 
 export function ConfigureAirshark(arg1:gui.AirsharkRequest):Promise<gui.DeviceSnapshot>;
 
+export function ConfigureBlackCanyon(arg1:gui.BlackCanyonRequest):Promise<gui.DeviceSnapshot>;
+
 export function ConfigureCW(arg1:gui.CWRequest):Promise<gui.DeviceSnapshot>;
 
 export function ConfigureSweep(arg1:gui.SweepRequest):Promise<gui.DeviceSnapshot>;
@@ -22,7 +24,7 @@ export function LoadTuningProfile():Promise<gui.TuningProfile>;
 
 export function PreviewNetwork(arg1:string):Promise<gui.NetworkPlan>;
 
-export function SaveTuningProfile(arg1:gui.TuningProfile):Promise<string>;
+export function SaveTuningProfile(arg1:gui.TuningProfile,arg2:string):Promise<string>;
 
 export function SetIPAddress(arg1:string):Promise<gui.NetworkChangeResult>;
 

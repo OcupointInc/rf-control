@@ -56,6 +56,10 @@ func (a *App) ConfigureAirshark(request controlgui.AirsharkRequest) (controlgui.
 	return a.service.ConfigureAirshark(request)
 }
 
+func (a *App) ConfigureBlackCanyon(request controlgui.BlackCanyonRequest) (controlgui.DeviceSnapshot, error) {
+	return a.service.ConfigureBlackCanyon(request)
+}
+
 func (a *App) SetMaximumAttenuation() (controlgui.DeviceSnapshot, error) {
 	return a.service.MaximumAttenuation()
 }
@@ -64,7 +68,7 @@ func (a *App) SetRFEnabled(enabled bool) (controlgui.DeviceSnapshot, error) {
 	return a.service.SetRFEnabled(enabled)
 }
 
-func (a *App) SaveTuningProfile(profile controlgui.TuningProfile) (string, error) {
+func (a *App) SaveTuningProfile(profile controlgui.TuningProfile, product string) (string, error) {
 	if err := controlgui.ValidateTuningProfile(profile); err != nil {
 		return "", err
 	}
@@ -72,6 +76,9 @@ func (a *App) SaveTuningProfile(profile controlgui.TuningProfile) (string, error
 		return "", fmt.Errorf("application is not ready")
 	}
 	name := "whalepod-control.json"
+	if product == "black-canyon" {
+		name = "black-canyon-control.json"
+	}
 	if profile.RFBand != nil {
 		name = fmt.Sprintf("airshark-%s.json", strings.ReplaceAll(*profile.RFBand, "-", "_"))
 	}
