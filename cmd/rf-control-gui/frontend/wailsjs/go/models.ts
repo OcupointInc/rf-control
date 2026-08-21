@@ -48,6 +48,7 @@ export namespace gui {
 	    boardType: string;
 	    boardLabel: string;
 	    barracuda: boolean;
+	    whalepod: boolean;
 	    mode: string;
 	    ifFrequencyMHz: number;
 	    sweepStopIfMHz: number;
@@ -84,6 +85,7 @@ export namespace gui {
 	        this.boardType = source["boardType"];
 	        this.boardLabel = source["boardLabel"];
 	        this.barracuda = source["barracuda"];
+	        this.whalepod = source["whalepod"];
 	        this.mode = source["mode"];
 	        this.ifFrequencyMHz = source["ifFrequencyMHz"];
 	        this.sweepStopIfMHz = source["sweepStopIfMHz"];
@@ -346,6 +348,11 @@ export namespace gui {
 	}
 	export class TuningProfile {
 	    barracuda?: BarracudaTuningProfile;
+	    attenuation_db?: number;
+	    cal_attenuation_db?: number;
+	    channels_enabled?: boolean;
+	    cal_enabled?: boolean;
+	    cal_source_internal?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new TuningProfile(source);
@@ -354,6 +361,11 @@ export namespace gui {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.barracuda = this.convertValues(source["barracuda"], BarracudaTuningProfile);
+	        this.attenuation_db = source["attenuation_db"];
+	        this.cal_attenuation_db = source["cal_attenuation_db"];
+	        this.channels_enabled = source["channels_enabled"];
+	        this.cal_enabled = source["cal_enabled"];
+	        this.cal_source_internal = source["cal_source_internal"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -373,6 +385,26 @@ export namespace gui {
 		    }
 		    return a;
 		}
+	}
+	export class WhalepodRequest {
+	    attenuationDb: number;
+	    calAttenuationDb: number;
+	    channelsEnabled: boolean;
+	    calibrationEnabled: boolean;
+	    calSourceInternal: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new WhalepodRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.attenuationDb = source["attenuationDb"];
+	        this.calAttenuationDb = source["calAttenuationDb"];
+	        this.channelsEnabled = source["channelsEnabled"];
+	        this.calibrationEnabled = source["calibrationEnabled"];
+	        this.calSourceInternal = source["calSourceInternal"];
+	    }
 	}
 
 }

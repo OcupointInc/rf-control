@@ -10,6 +10,10 @@ export function ConfigureSweep(arg1) {
   return window['go']['main']['App']['ConfigureSweep'](arg1);
 }
 
+export function ConfigureWhalepod(arg1) {
+  return window['go']['main']['App']['ConfigureWhalepod'](arg1);
+}
+
 export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }

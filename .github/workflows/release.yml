@@ -380,8 +380,9 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: List artifacts
+      - name: Prepare release artifacts
         run: |
+          cp firmware/whalepod.uf2 dist/whalepod.uf2
           ls -la dist/
           cd dist
           sha256sum * > SHA256SUMS
@@ -413,13 +414,16 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: List artifacts
+      - name: Prepare release artifacts
         run: |
+          cp firmware/whalepod.uf2 dist/whalepod.uf2
           ls -la dist/
           cd dist
           sha256sum * > SHA256SUMS

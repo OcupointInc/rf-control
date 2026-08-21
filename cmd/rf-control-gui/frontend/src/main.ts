@@ -3,6 +3,7 @@ import './style.css';
 import {
   ConfigureCW,
   ConfigureSweep,
+  ConfigureWhalepod,
   Connect,
   Disconnect,
   Discover,
@@ -41,6 +42,7 @@ type DeviceStatus = {
   boardType: string;
   boardLabel: string;
   barracuda: boolean;
+  whalepod: boolean;
   mode: string;
   ifFrequencyMHz: number;
   sweepStopIfMHz: number;
@@ -86,7 +88,14 @@ type BarracudaTuningProfile = {
   clock: 'internal' | 'external';
   rf_enabled: boolean;
 };
-type TuningProfile = { barracuda: BarracudaTuningProfile };
+type TuningProfile = {
+  barracuda?: BarracudaTuningProfile;
+  attenuation_db?: number;
+  cal_attenuation_db?: number;
+  channels_enabled?: boolean;
+  cal_enabled?: boolean;
+  cal_source_internal?: boolean;
+};
 type Tab = 'control' | 'status' | 'network';
 
 const scanTimeoutMs = 5000;
@@ -112,6 +121,13 @@ const state = {
     outputPowerDbm: nominalMaximumOutputDbm,
     clock: 'internal' as 'internal' | 'external',
     rfEnabled: true,
+  },
+  whalepodControl: {
+    attenuationDb: 0,
+    calAttenuationDb: 0,
+    channelsEnabled: false,
+    calibrationEnabled: false,
+    calSourceInternal: true,
   },
   networkInput: '',
   networkPlan: null as NetworkPlan | null,
@@ -154,6 +170,7 @@ const statusStrip = (status: DeviceStatus): string => `
   <div class="status-strip">
     <span class="chip good"><i></i>Connected</span>
     ${status.barracuda ? `<span class="chip ${status.rfEnabled ? 'good' : 'bad'}"><i></i>RF: ${status.rfEnabled ? 'On' : 'Off'}</span>` : ''}
+    ${status.whalepod ? `<span class="chip ${status.channelsEnabled ? 'good' : 'bad'}"><i></i>Frontends: ${status.channelsEnabled ? 'On' : 'Off'}</span>` : ''}
     ${lockChip('Signal', status.signalLockApplicable, status.signalLocked)}
     ${lockChip('External reference', status.referenceLockApplicable, status.referenceLocked)}
     ${status.temperatureAvailable ? `<span class="chip neutral">${status.temperatureC.toFixed(1)} °C${status.temperatureBootSample ? ' boot sample' : ''}</span>` : ''}
@@ -228,13 +245,18 @@ function renderHeader(snapshot: Snapshot): string {
 
 function renderTabs(snapshot: Snapshot): string {
   const tabs: Array<[Tab, string]> = snapshot.customerControl
-    ? [['control', 'RF Control'], ['status', 'Status'], ['network', 'Network']]
+    ? [['control', 'Control'], ['status', 'Status'], ['network', 'Network']]
     : [['status', 'Status'], ['network', 'Network']];
   if (!snapshot.customerControl && state.tab === 'control') state.tab = 'status';
   return `<nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`).join('')}</nav>`;
 }
 
 function renderControl(snapshot: Snapshot): string {
+  if (snapshot.status.whalepod) return renderWhalepodControl(snapshot);
+  return renderBarracudaControl(snapshot);
+}
+
+function renderBarracudaControl(snapshot: Snapshot): string {
   const control = state.control;
   const rfPending = control.rfEnabled !== snapshot.status.rfEnabled;
   return `
@@ -275,7 +297,8 @@ function renderBarracudaFacts(status: DeviceStatus): string {
 
 function renderStatus(snapshot: Snapshot): string {
   const status = snapshot.status;
-  const boardSpecific = status.barracuda ? renderBarracudaFacts(status) : renderGenericFacts(status);
+  const boardSpecific = status.barracuda ? renderBarracudaFacts(status)
+    : status.whalepod ? renderWhalepodFacts(status) : renderGenericFacts(status);
   return `
     <section class="content">
       <div class="section-intro"><div><p class="eyebrow">Read-only telemetry</p><h2>Device status</h2></div><button class="secondary" id="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh now</button></div>
@@ -283,7 +306,7 @@ function renderStatus(snapshot: Snapshot): string {
         <article class="panel"><h3>${escapeHTML(status.boardLabel)}</h3>${boardSpecific}</article>
         <article class="panel"><h3>Device identity</h3><dl class="facts">${identityFacts(snapshot.network)}</dl></article>
       </div>
-      ${!status.barracuda ? '<div class="callout">This release provides discovery, status, and network configuration for this board. Product-specific output controls remain available through the CLI.</div>' : ''}
+      ${!snapshot.customerControl ? '<div class="callout">This release provides discovery, status, and network configuration for this board. Product-specific output controls remain available through the CLI.</div>' : ''}
     </section>`;
 }
 
@@ -291,7 +314,7 @@ function renderGenericFacts(status: DeviceStatus): string {
   if (status.boardType === 'rf_switch') {
     return `<dl class="facts"><div><dt>RF switch channel</dt><dd>${status.rfSwitchChannel === 0 ? 'Off / isolated' : status.rfSwitchChannel}</dd></div></dl>`;
   }
-  if (status.boardType === 'whalepod' || status.boardType === 'whalepod_automation') {
+  if (status.boardType === 'whalepod_automation') {
     return `<dl class="facts">
       <div><dt>Channels</dt><dd>${status.channelsEnabled ? 'Enabled' : 'Disabled'}</dd></div>
       <div><dt>Frontend attenuation</dt><dd>${status.attenuationDb.toFixed(0)} dB</dd></div>
@@ -398,10 +421,30 @@ function bindEvents(): void {
     readControlInputs();
     void applyRFControl();
   });
+  document.querySelector<HTMLFormElement>('#whalepod-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    readWhalepodInputs();
+    void applyWhalepodControl();
+  });
   document.querySelector<HTMLInputElement>('#rf-enabled')?.addEventListener('change', (event) => {
     state.control.rfEnabled = (event.target as HTMLInputElement).checked;
     render();
   });
+  document.querySelector<HTMLInputElement>('#frontends-enabled')?.addEventListener('change', (event) => {
+    readWhalepodInputs();
+    state.whalepodControl.channelsEnabled = (event.target as HTMLInputElement).checked;
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>('input[name="signal-path"]').forEach((input) => input.addEventListener('change', () => {
+    readWhalepodInputs();
+    state.whalepodControl.calibrationEnabled = input.value === 'cal';
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>('input[name="cal-source"]').forEach((input) => input.addEventListener('change', () => {
+    readWhalepodInputs();
+    state.whalepodControl.calSourceInternal = input.value === 'internal';
+    render();
+  }));
   document.querySelector('#load-tuning')?.addEventListener('click', () => void loadTuningProfile());
   document.querySelector('#export-tuning')?.addEventListener('click', () => void exportTuningProfile());
   document.querySelectorAll<HTMLInputElement>('input[name="clock"]').forEach((input) => input.addEventListener('change', () => {
@@ -418,6 +461,10 @@ function bindEvents(): void {
 }
 
 function readControlInputs(): void {
+  if (state.snapshot?.status.whalepod) {
+    readWhalepodInputs();
+    return;
+  }
   const numberValue = (selector: string, fallback: number): number => {
     const input = document.querySelector<HTMLInputElement>(selector);
     return input ? Number(input.value) : fallback;
@@ -453,6 +500,57 @@ async function withAction<T>(message: string, action: () => Promise<T>): Promise
     state.busy = false;
     render();
   }
+}
+
+function readWhalepodInputs(): void {
+  const frontend = document.querySelector<HTMLInputElement>('#frontend-attenuation');
+  const calibration = document.querySelector<HTMLInputElement>('#cal-attenuation');
+  if (frontend) state.whalepodControl.attenuationDb = Number(frontend.value);
+  if (calibration) state.whalepodControl.calAttenuationDb = Number(calibration.value);
+  state.whalepodControl.channelsEnabled = document.querySelector<HTMLInputElement>('#frontends-enabled')?.checked
+    ?? state.whalepodControl.channelsEnabled;
+}
+
+function renderWhalepodControl(snapshot: Snapshot): string {
+  const control = state.whalepodControl;
+  const status = snapshot.status;
+  const powerPending = control.channelsEnabled !== status.channelsEnabled;
+  const anyPending = powerPending
+    || control.attenuationDb !== status.attenuationDb
+    || control.calAttenuationDb !== status.calAttenuationDb
+    || control.calibrationEnabled !== status.calibrationEnabled
+    || control.calSourceInternal !== status.calSourceInternal;
+  return `
+    <section class="content control-layout">
+      <div class="control-card">
+        <div class="section-intro"><div><p class="eyebrow">Whalepod signal routing</p><h2>Mode</h2></div><label class="rf-slider-control ${control.channelsEnabled ? 'on' : 'off'} ${powerPending ? 'pending' : ''}"><span><b>FRONTENDS ${control.channelsEnabled ? 'ON' : 'OFF'}</b><small>${powerPending ? 'Change pending' : 'Applied state'}</small></span><input id="frontends-enabled" type="checkbox" ${control.channelsEnabled ? 'checked' : ''} ${state.busy ? 'disabled' : ''}><i aria-hidden="true"></i></label></div>
+        <form id="whalepod-form">
+          <div class="field-row whalepod-settings">
+            <div class="field"><label for="frontend-attenuation">Frontend attenuation</label><div class="input-unit"><input id="frontend-attenuation" type="number" min="0" max="31" step="1" value="${control.attenuationDb}" required><span>dB</span></div><small>Digital attenuation, 0–31 dB.</small></div>
+            <fieldset class="field"><legend>RF path</legend><div class="radio-row"><label><input type="radio" name="signal-path" value="through" ${!control.calibrationEnabled ? 'checked' : ''}>Through</label><label><input type="radio" name="signal-path" value="cal" ${control.calibrationEnabled ? 'checked' : ''}>Cal</label></div><small>Select the through path or route calibration to the frontends.</small></fieldset>
+          </div>
+          <div class="calibration-controls ${control.calibrationEnabled ? '' : 'inactive'}">
+            <div class="calibration-heading"><div><p class="eyebrow">Calibration path</p><h3>${control.calibrationEnabled ? 'Cal path selected' : 'Available when Cal is selected'}</h3></div><span>${control.calSourceInternal ? 'Internal source' : 'External source'}</span></div>
+            <div class="field-row whalepod-settings">
+              <fieldset class="field"><legend>Calibration source</legend><div class="radio-row"><label><input type="radio" name="cal-source" value="internal" ${control.calSourceInternal ? 'checked' : ''}>Internal</label><label><input type="radio" name="cal-source" value="external" ${!control.calSourceInternal ? 'checked' : ''}>External</label></div><small>The internal source uses the onboard calibration source; external uses the front-panel input.</small></fieldset>
+              <div class="field"><label for="cal-attenuation">Calibration attenuation</label><div class="input-unit"><input id="cal-attenuation" type="number" min="0" max="31" step="1" value="${control.calAttenuationDb}" required><span>dB</span></div><small>Calibration-path digital attenuation, 0–31 dB.</small></div>
+            </div>
+          </div>
+          <div class="form-actions"><button class="primary large" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Applying…' : 'Apply'}</button><div class="profile-actions"><button class="secondary" type="button" id="load-tuning" ${state.busy ? 'disabled' : ''}>Load</button><button class="secondary export-profile" type="button" id="export-tuning" ${state.busy ? 'disabled' : ''}>Export</button></div><small>${anyPending ? 'Settings changed · press Apply to update hardware.' : 'Export saves this applied state as CLI-ready JSON.'}</small></div>
+        </form>
+      </div>
+      <aside class="live-panel"><p class="eyebrow">Live state</p><h3>${status.calibrationEnabled ? 'CAL' : 'THROUGH'}</h3>${renderWhalepodFacts(status)}</aside>
+    </section>`;
+}
+
+function renderWhalepodFacts(status: DeviceStatus): string {
+  return `<dl class="facts">
+    <div><dt>Frontend power</dt><dd class="${status.channelsEnabled ? 'text-good' : 'text-bad'}">${status.channelsEnabled ? 'On' : 'Off'}</dd></div>
+    <div><dt>Frontend attenuation</dt><dd>${status.attenuationDb.toFixed(0)} dB</dd></div>
+    <div><dt>RF path</dt><dd>${status.calibrationEnabled ? 'Cal' : 'Through'}</dd></div>
+    <div><dt>Calibration source</dt><dd>${status.calSourceInternal ? 'Internal' : 'External'}</dd></div>
+    <div><dt>Calibration attenuation</dt><dd>${status.calAttenuationDb} dB</dd></div>
+  </dl>`;
 }
 
 function clearNotice(): void {
@@ -526,6 +624,13 @@ async function connectDevice(endpoint: Endpoint): Promise<void> {
   state.networkPlan = null;
   state.networkError = '';
   state.control.rfEnabled = result.status.rfEnabled;
+  if (result.status.whalepod) {
+    state.whalepodControl.attenuationDb = result.status.attenuationDb;
+    state.whalepodControl.calAttenuationDb = result.status.calAttenuationDb;
+    state.whalepodControl.channelsEnabled = result.status.channelsEnabled;
+    state.whalepodControl.calibrationEnabled = result.status.calibrationEnabled;
+    state.whalepodControl.calSourceInternal = result.status.calSourceInternal;
+  }
   render();
 }
 
@@ -570,7 +675,38 @@ async function applyRFControl(): Promise<void> {
   render();
 }
 
+async function applyWhalepodControl(): Promise<void> {
+  const control = state.whalepodControl;
+  const message = `Whalepod configuration applied · frontends ${control.channelsEnabled ? 'on' : 'off'} · ${control.calibrationEnabled ? 'cal' : 'through'} path`;
+  const result = await withAction(message, () => ConfigureWhalepod({
+    attenuationDb: control.attenuationDb,
+    calAttenuationDb: control.calAttenuationDb,
+    channelsEnabled: control.channelsEnabled,
+    calibrationEnabled: control.calibrationEnabled,
+    calSourceInternal: control.calSourceInternal,
+  }) as Promise<Snapshot>);
+  if (result) {
+    state.snapshot = result;
+    state.whalepodControl.attenuationDb = result.status.attenuationDb;
+    state.whalepodControl.calAttenuationDb = result.status.calAttenuationDb;
+    state.whalepodControl.channelsEnabled = result.status.channelsEnabled;
+    state.whalepodControl.calibrationEnabled = result.status.calibrationEnabled;
+    state.whalepodControl.calSourceInternal = result.status.calSourceInternal;
+  }
+  render();
+}
+
 function tuningProfileFromControl(): TuningProfile {
+  if (state.snapshot?.status.whalepod) {
+    const control = state.whalepodControl;
+    return {
+      attenuation_db: control.attenuationDb,
+      cal_attenuation_db: control.calAttenuationDb,
+      channels_enabled: control.channelsEnabled,
+      cal_enabled: control.calibrationEnabled,
+      cal_source_internal: control.calSourceInternal,
+    };
+  }
   const control = state.control;
   const barracuda: BarracudaTuningProfile = {
     mode: control.mode,
@@ -618,20 +754,30 @@ async function loadTuningProfile(): Promise<void> {
   render();
   try {
     const profile = await LoadTuningProfile() as TuningProfile;
-    const config = profile?.barracuda;
-    if (!config) return;
-    state.control.mode = config.mode;
-    state.control.outputPowerDbm = nominalMaximumOutputDbm - config.attenuation_db;
-    state.control.clock = config.clock;
-    state.control.rfEnabled = config.rf_enabled;
-    if (config.mode === 'cw') {
-      state.control.cwMHz = config.if_frequency_mhz ?? state.control.cwMHz;
+    if (state.snapshot?.status.whalepod) {
+      if (profile.barracuda) throw new Error('This is a Barracuda profile. Connect a Barracuda to load it.');
+      const control = state.whalepodControl;
+      control.attenuationDb = profile.attenuation_db ?? control.attenuationDb;
+      control.calAttenuationDb = profile.cal_attenuation_db ?? control.calAttenuationDb;
+      control.channelsEnabled = profile.channels_enabled ?? control.channelsEnabled;
+      control.calibrationEnabled = profile.cal_enabled ?? control.calibrationEnabled;
+      control.calSourceInternal = profile.cal_source_internal ?? control.calSourceInternal;
     } else {
-      state.control.startMHz = config.start_if_mhz ?? state.control.startMHz;
-      state.control.stopMHz = config.stop_if_mhz ?? state.control.stopMHz;
-      state.control.sweepTime = config.sweep_time || state.control.sweepTime;
+      const config = profile?.barracuda;
+      if (!config) throw new Error('This is a Whalepod profile. Connect a Whalepod to load it.');
+      state.control.mode = config.mode;
+      state.control.outputPowerDbm = nominalMaximumOutputDbm - config.attenuation_db;
+      state.control.clock = config.clock;
+      state.control.rfEnabled = config.rf_enabled;
+      if (config.mode === 'cw') {
+        state.control.cwMHz = config.if_frequency_mhz ?? state.control.cwMHz;
+      } else {
+        state.control.startMHz = config.start_if_mhz ?? state.control.startMHz;
+        state.control.stopMHz = config.stop_if_mhz ?? state.control.stopMHz;
+        state.control.sweepTime = config.sweep_time || state.control.sweepTime;
+      }
     }
-    state.notice = 'Tuning JSON loaded · press Apply to tune the hardware';
+    state.notice = 'Control JSON loaded · press Apply to update the hardware';
     state.noticeKind = 'success';
     window.setTimeout(clearNotice, 5000);
   } catch (error) {

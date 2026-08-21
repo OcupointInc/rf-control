@@ -3,6 +3,8 @@ package gui
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/OcupointInc/rf-control/client"
 	pb "github.com/OcupointInc/rf-control/controlpb"
+	"github.com/OcupointInc/rf-control/internal/mockfirmware"
 )
 
 type fakeDevice struct {
@@ -22,6 +25,7 @@ type fakeDevice struct {
 	loFrequency    int32
 	lmxPowerCode   uint32
 	lmxReadBatches [][]uint32
+	whalepodCalls  []string
 	closed         int
 	statusDelay    time.Duration
 	statusActive   atomic.Int32
@@ -88,6 +92,31 @@ func (f *fakeDevice) ReadLMX2595Registers(addresses []uint32) (*pb.Lmx2595Regist
 	}
 	return &pb.Lmx2595RegisterReadResponse{Addresses: append([]uint32(nil), addresses...), Values: values, Success: true}, nil
 }
+func (f *fakeDevice) SetAttenuation(value int32) error {
+	f.whalepodCalls = append(f.whalepodCalls, "attenuation")
+	f.status.AttenuationDb = value
+	return nil
+}
+func (f *fakeDevice) SetCalAttenuation(value int32) error {
+	f.whalepodCalls = append(f.whalepodCalls, "cal-attenuation")
+	f.status.CalAttenuationDb = value
+	return nil
+}
+func (f *fakeDevice) SetChannelsEnabled(value bool) error {
+	f.whalepodCalls = append(f.whalepodCalls, "power")
+	f.status.ChannelsEnabled = value
+	return nil
+}
+func (f *fakeDevice) SetCalEnabled(value bool) error {
+	f.whalepodCalls = append(f.whalepodCalls, "path")
+	f.status.CalibrationEnabled = value
+	return nil
+}
+func (f *fakeDevice) SetCalSource(value bool) error {
+	f.whalepodCalls = append(f.whalepodCalls, "cal-source")
+	f.status.CalSourceInternal = value
+	return nil
+}
 
 func barracudaFake() *fakeDevice {
 	return &fakeDevice{
@@ -104,6 +133,21 @@ func barracudaFake() *fakeDevice {
 				LmxOutputPowerCode:      client.BarracudaCalibratedLMXPowerCode,
 				AdfState:                &pb.Adf4159State{FrequencyMhz: client.BarracudaFixedLOMHz + 400},
 			},
+		},
+	}
+}
+
+func whalepodFake() *fakeDevice {
+	return &fakeDevice{
+		config: &pb.GetConfigResponse{
+			StaticIp: []byte{127, 0, 0, 1}, StaticGateway: []byte{127, 0, 0, 1},
+			StaticSubnet: []byte{255, 0, 0, 0}, MdnsHostname: "whalepod-mock",
+			MacAddress: []byte{0x02, 0, 0, 0, 0, 2}, SerialNumber: "WHALE-MOCK-001",
+			FirmwareVersion: "mock-1.0.0", UniqueBoardId: "MOCK-WHALEPOD",
+		},
+		status: &pb.GetStatusResponse{
+			BoardType: "whalepod", AttenuationDb: 3, CalAttenuationDb: 7,
+			ChannelsEnabled: true, CalibrationEnabled: false, CalSourceInternal: true,
 		},
 	}
 }
@@ -149,6 +193,118 @@ func TestValidateTuningProfileMatchesCLIApplyShape(t *testing.T) {
 	profile.Barracuda.AttenuationDB = 6.1
 	if err := ValidateTuningProfile(profile); err == nil {
 		t.Fatal("non-quarter-dB attenuation was accepted")
+	}
+}
+
+func TestValidateWhalepodProfileMatchesCLIApplyShape(t *testing.T) {
+	attenuation, calAttenuation := int32(12), int32(5)
+	channels, calEnabled, internal := true, true, false
+	profile := TuningProfile{
+		AttenuationDB: &attenuation, CalAttenuationDB: &calAttenuation,
+		ChannelsEnabled: &channels, CalibrationEnabled: &calEnabled, CalSourceInternal: &internal,
+	}
+	if err := ValidateTuningProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range [][]byte{
+		[]byte(`"attenuation_db":12`), []byte(`"cal_attenuation_db":5`),
+		[]byte(`"channels_enabled":true`), []byte(`"cal_enabled":true`),
+		[]byte(`"cal_source_internal":false`),
+	} {
+		if !bytes.Contains(encoded, field) {
+			t.Fatalf("profile JSON %s is missing %s", encoded, field)
+		}
+	}
+	attenuation = 32
+	if err := ValidateTuningProfile(profile); err == nil {
+		t.Fatal("out-of-range Whalepod attenuation was accepted")
+	}
+	profile.Barracuda = &BarracudaTuningProfile{Mode: "cw", IFFrequencyMHz: 400, Clock: "internal"}
+	if err := ValidateTuningProfile(profile); err == nil {
+		t.Fatal("mixed Barracuda and Whalepod profile was accepted")
+	}
+}
+
+func TestConfigureWhalepodAppliesCompleteStateWithSafePowerOrder(t *testing.T) {
+	fake := whalepodFake()
+	service := serviceWithFake(fake)
+	snapshot, err := service.Connect(Endpoint{Kind: "usb", Address: "COM7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.CustomerControl || !snapshot.Status.Whalepod {
+		t.Fatalf("Whalepod did not receive customer controls: %+v", snapshot)
+	}
+
+	snapshot, err = service.ConfigureWhalepod(WhalepodRequest{
+		AttenuationDB: 12, CalAttenuationDB: 5, ChannelsEnabled: false,
+		CalibrationEnabled: true, CalSourceInternal: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOff := []string{"power", "attenuation", "cal-attenuation", "cal-source", "path"}
+	if fmt.Sprint(fake.whalepodCalls) != fmt.Sprint(wantOff) {
+		t.Fatalf("power-off call order = %v, want %v", fake.whalepodCalls, wantOff)
+	}
+	if snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled || snapshot.Status.CalSourceInternal ||
+		snapshot.Status.AttenuationDB != 12 || snapshot.Status.CalAttenuationDB != 5 {
+		t.Fatalf("applied Whalepod state = %+v", snapshot.Status)
+	}
+
+	fake.whalepodCalls = nil
+	_, err = service.ConfigureWhalepod(WhalepodRequest{
+		AttenuationDB: 8, CalAttenuationDB: 4, ChannelsEnabled: true,
+		CalibrationEnabled: false, CalSourceInternal: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOn := []string{"attenuation", "cal-attenuation", "cal-source", "path", "power"}
+	if fmt.Sprint(fake.whalepodCalls) != fmt.Sprint(wantOn) {
+		t.Fatalf("power-on call order = %v, want %v", fake.whalepodCalls, wantOn)
+	}
+}
+
+func TestWhalepodGUIServiceAgainstMockFirmware(t *testing.T) {
+	firmware, err := mockfirmware.ListenWhalepod("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = firmware.Serve() }()
+	t.Cleanup(func() { _ = firmware.Close() })
+	port := firmware.Addr().(*net.TCPAddr).Port
+	service := NewService()
+	service.listUSB = func() ([]string, error) { return nil, nil }
+	service.discoverEthernet = func(time.Duration) ([]*pb.DiscoveryResponse, error) { return nil, nil }
+
+	snapshot, err := service.Connect(Endpoint{Kind: "ethernet", Address: "127.0.0.1", Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status.BoardLabel != "Whalepod" || snapshot.Network.Firmware != "mock-1.0.0" {
+		t.Fatalf("mock firmware identity = %+v", snapshot)
+	}
+
+	snapshot, err = service.ConfigureWhalepod(WhalepodRequest{
+		AttenuationDB: 19, CalAttenuationDB: 11, ChannelsEnabled: true,
+		CalibrationEnabled: true, CalSourceInternal: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{"attenuation", "cal-attenuation", "cal-source", "path", "power"}
+	calls := firmware.Calls()
+	if fmt.Sprint(calls) != fmt.Sprint(wantCalls) {
+		t.Fatalf("wire requests = %v, want %v", calls, wantCalls)
+	}
+	if !snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled || snapshot.Status.CalSourceInternal ||
+		snapshot.Status.AttenuationDB != 19 || snapshot.Status.CalAttenuationDB != 11 {
+		t.Fatalf("wire readback = %+v", snapshot.Status)
 	}
 }
 

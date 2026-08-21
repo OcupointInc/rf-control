@@ -6,6 +6,8 @@ export function ConfigureCW(arg1:gui.CWRequest):Promise<gui.DeviceSnapshot>;
 
 export function ConfigureSweep(arg1:gui.SweepRequest):Promise<gui.DeviceSnapshot>;
 
+export function ConfigureWhalepod(arg1:gui.WhalepodRequest):Promise<gui.DeviceSnapshot>;
+
 export function Connect(arg1:gui.Endpoint):Promise<gui.DeviceSnapshot>;
 
 export function Disconnect():Promise<void>;

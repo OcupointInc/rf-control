@@ -48,6 +48,10 @@ func (a *App) ConfigureSweep(request controlgui.SweepRequest) (controlgui.Device
 	return a.service.ConfigureSweep(request)
 }
 
+func (a *App) ConfigureWhalepod(request controlgui.WhalepodRequest) (controlgui.DeviceSnapshot, error) {
+	return a.service.ConfigureWhalepod(request)
+}
+
 func (a *App) SetMaximumAttenuation() (controlgui.DeviceSnapshot, error) {
 	return a.service.MaximumAttenuation()
 }
@@ -63,8 +67,9 @@ func (a *App) SaveTuningProfile(profile controlgui.TuningProfile) (string, error
 	if a.ctx == nil {
 		return "", fmt.Errorf("application is not ready")
 	}
-	name := "barracuda-tuning.json"
+	name := "whalepod-control.json"
 	if config := profile.Barracuda; config != nil {
+		name = "barracuda-tuning.json"
 		if strings.EqualFold(config.Mode, "cw") {
 			name = fmt.Sprintf("barracuda-cw-%dmhz.json", config.IFFrequencyMHz)
 		} else {
@@ -72,8 +77,8 @@ func (a *App) SaveTuningProfile(profile controlgui.TuningProfile) (string, error
 		}
 	}
 	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title: "Save Barracuda tuning profile", DefaultFilename: name,
-		Filters: []runtime.FileFilter{{DisplayName: "JSON tuning profile (*.json)", Pattern: "*.json"}},
+		Title: "Save control profile", DefaultFilename: name,
+		Filters: []runtime.FileFilter{{DisplayName: "JSON control profile (*.json)", Pattern: "*.json"}},
 	})
 	if err != nil || path == "" {
 		return path, err
@@ -97,8 +102,8 @@ func (a *App) LoadTuningProfile() (controlgui.TuningProfile, error) {
 		return controlgui.TuningProfile{}, fmt.Errorf("application is not ready")
 	}
 	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:   "Open Barracuda tuning profile",
-		Filters: []runtime.FileFilter{{DisplayName: "JSON tuning profile (*.json)", Pattern: "*.json"}},
+		Title:   "Open control profile",
+		Filters: []runtime.FileFilter{{DisplayName: "JSON control profile (*.json)", Pattern: "*.json"}},
 	})
 	if err != nil || path == "" {
 		return controlgui.TuningProfile{}, err

@@ -64,6 +64,7 @@ type DeviceStatus struct {
 	BoardType               string  `json:"boardType"`
 	BoardLabel              string  `json:"boardLabel"`
 	Barracuda               bool    `json:"barracuda"`
+	Whalepod                bool    `json:"whalepod"`
 	Mode                    string  `json:"mode"`
 	IFFrequencyMHz          int32   `json:"ifFrequencyMHz"`
 	SweepStopIFMHz          int32   `json:"sweepStopIfMHz"`
@@ -116,11 +117,27 @@ type SweepRequest struct {
 	RFEnabled   bool    `json:"rfEnabled"`
 }
 
+// WhalepodRequest is a complete pending Whalepod control state. The GUI sends
+// it only when Apply is pressed, so changing a selector never changes hardware
+// by itself.
+type WhalepodRequest struct {
+	AttenuationDB      int32 `json:"attenuationDb"`
+	CalAttenuationDB   int32 `json:"calAttenuationDb"`
+	ChannelsEnabled    bool  `json:"channelsEnabled"`
+	CalibrationEnabled bool  `json:"calibrationEnabled"`
+	CalSourceInternal  bool  `json:"calSourceInternal"`
+}
+
 // TuningProfile is intentionally identical to the CLI `apply` command's
 // customer-facing Barracuda JSON block, so a file saved in the GUI can be used
 // later by either the GUI or this same executable in CLI mode.
 type TuningProfile struct {
-	Barracuda *BarracudaTuningProfile `json:"barracuda"`
+	Barracuda          *BarracudaTuningProfile `json:"barracuda,omitempty"`
+	AttenuationDB      *int32                  `json:"attenuation_db,omitempty"`
+	CalAttenuationDB   *int32                  `json:"cal_attenuation_db,omitempty"`
+	ChannelsEnabled    *bool                   `json:"channels_enabled,omitempty"`
+	CalibrationEnabled *bool                   `json:"cal_enabled,omitempty"`
+	CalSourceInternal  *bool                   `json:"cal_source_internal,omitempty"`
 }
 
 type BarracudaTuningProfile struct {
@@ -136,8 +153,27 @@ type BarracudaTuningProfile struct {
 
 func ValidateTuningProfile(profile TuningProfile) error {
 	config := profile.Barracuda
+	whalepodFields := profile.AttenuationDB != nil || profile.CalAttenuationDB != nil ||
+		profile.ChannelsEnabled != nil || profile.CalibrationEnabled != nil || profile.CalSourceInternal != nil
 	if config == nil {
-		return fmt.Errorf("tuning profile is missing the barracuda block")
+		if !whalepodFields {
+			return fmt.Errorf("configuration profile does not contain supported controls")
+		}
+		for _, value := range []struct {
+			name string
+			db   *int32
+		}{
+			{"frontend attenuation", profile.AttenuationDB},
+			{"calibration attenuation", profile.CalAttenuationDB},
+		} {
+			if value.db != nil && (*value.db < 0 || *value.db > 31) {
+				return fmt.Errorf("%s must be 0–31 dB", value.name)
+			}
+		}
+		return nil
+	}
+	if whalepodFields {
+		return fmt.Errorf("a Barracuda profile cannot include Whalepod controls")
 	}
 	config.Mode = strings.ToLower(strings.TrimSpace(config.Mode))
 	if _, err := externalClock(config.Clock); err != nil {
@@ -199,6 +235,11 @@ type deviceClient interface {
 	SetLoFrequency(int32) error
 	SetLMXOutputPower(uint32) error
 	ReadLMX2595Registers([]uint32) (*pb.Lmx2595RegisterReadResponse, error)
+	SetAttenuation(int32) error
+	SetCalAttenuation(int32) error
+	SetChannelsEnabled(bool) error
+	SetCalEnabled(bool) error
+	SetCalSource(bool) error
 }
 
 type session struct {
@@ -536,6 +577,49 @@ func (s *Service) ConfigureSweep(request SweepRequest) (DeviceSnapshot, error) {
 	return s.refreshLocked()
 }
 
+// ConfigureWhalepod applies the complete Whalepod control state. Power-off is
+// sent first when requested; power-on is sent last so newly enabled frontends
+// never briefly expose stale attenuation or calibration routing.
+func (s *Service) ConfigureWhalepod(request WhalepodRequest) (DeviceSnapshot, error) {
+	if request.AttenuationDB < 0 || request.AttenuationDB > 31 {
+		return DeviceSnapshot{}, fmt.Errorf("frontend attenuation must be 0–31 dB")
+	}
+	if request.CalAttenuationDB < 0 || request.CalAttenuationDB > 31 {
+		return DeviceSnapshot{}, fmt.Errorf("calibration attenuation must be 0–31 dB")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireWhalepodLocked(); err != nil {
+		return DeviceSnapshot{}, err
+	}
+	if !request.ChannelsEnabled {
+		if err := s.active.client.SetChannelsEnabled(false); err != nil {
+			return DeviceSnapshot{}, fmt.Errorf("turn frontend power off: %w", err)
+		}
+	}
+	if err := s.active.client.SetAttenuation(request.AttenuationDB); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set frontend attenuation: %w", err)
+	}
+	if err := s.active.client.SetCalAttenuation(request.CalAttenuationDB); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set calibration attenuation: %w", err)
+	}
+	// Source must be selected before entering calibration mode: the firmware
+	// gates the internal noise-source amplifier with both states.
+	if err := s.active.client.SetCalSource(request.CalSourceInternal); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("select calibration source: %w", err)
+	}
+	if err := s.active.client.SetCalEnabled(request.CalibrationEnabled); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("select RF path: %w", err)
+	}
+	if request.ChannelsEnabled {
+		if err := s.active.client.SetChannelsEnabled(true); err != nil {
+			return DeviceSnapshot{}, fmt.Errorf("turn frontend power on: %w", err)
+		}
+	}
+	return s.refreshLocked()
+}
+
 // MaximumAttenuation applies the Barracuda DSA's 31.75 dB maximum. It does not
 // claim to electrically disconnect the output; the UI labels it accordingly.
 func (s *Service) MaximumAttenuation() (DeviceSnapshot, error) {
@@ -710,6 +794,16 @@ func (s *Service) requireBarracudaLocked() error {
 	return nil
 }
 
+func (s *Service) requireWhalepodLocked() error {
+	if s.active == nil {
+		return fmt.Errorf("no device is connected")
+	}
+	if s.active.status.GetBoardType() != "whalepod" {
+		return fmt.Errorf("Whalepod controls are unavailable for %s", boardLabel(s.active.status.GetBoardType()))
+	}
+	return nil
+}
+
 func (s *Service) snapshotLocked() DeviceSnapshot {
 	if s.active == nil {
 		return DeviceSnapshot{}
@@ -718,7 +812,7 @@ func (s *Service) snapshotLocked() DeviceSnapshot {
 		Connected: true, Endpoint: s.active.endpoint,
 		Network:         networkFromConfig(s.active.config),
 		Status:          statusFromResponse(s.active),
-		CustomerControl: s.active.status.GetBoardType() == "barracuda",
+		CustomerControl: s.active.status.GetBoardType() == "barracuda" || s.active.status.GetBoardType() == "whalepod",
 	}
 }
 
@@ -726,7 +820,7 @@ func statusFromResponse(current *session) DeviceStatus {
 	status := current.status
 	board := status.GetBoardType()
 	out := DeviceStatus{
-		BoardType: board, BoardLabel: boardLabel(board), Barracuda: board == "barracuda",
+		BoardType: board, BoardLabel: boardLabel(board), Barracuda: board == "barracuda", Whalepod: board == "whalepod",
 		AttenuationDB:         float64(status.GetAttenuationDb()),
 		TemperatureAvailable:  status.GetMcuTemperatureC() != 0,
 		TemperatureC:          float64(status.GetMcuTemperatureC()),
