@@ -2015,6 +2015,29 @@ func cmdMockWhalepod(args []string) error {
 	return server.Serve()
 }
 
+// cmdMockAirshark runs the Straps-compatible Airshark simulator used for GUI
+// development and end-to-end testing.
+func cmdMockAirshark(args []string) error {
+	fs := flag.NewFlagSet("mock-airshark", flag.ExitOnError)
+	listen := fs.String("listen", "127.0.0.1:5000", "Loopback TCP address for the mock control server")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		return usagef("usage: mock-airshark [--listen 127.0.0.1:5000]")
+	}
+	host, _, err := net.SplitHostPort(*listen)
+	if err != nil || (host != "127.0.0.1" && host != "localhost") {
+		return usagef("mock-airshark must listen on loopback as host:port")
+	}
+	server, err := mockfirmware.ListenAirshark(*listen)
+	if err != nil {
+		return err
+	}
+	defer server.Close()
+	fmt.Printf("Airshark mock firmware listening at %s\n", server.Addr())
+	fmt.Println("Connect the GUI directly to 127.0.0.1. Press Ctrl+C to stop.")
+	return server.Serve()
+}
+
 // validate checks every statically-checkable field — enum values, numeric
 // ranges, IP formats — so a bad document is rejected up front, before the
 // transport is even opened, with a usageError (exit code exitUsage). This means
@@ -2489,6 +2512,8 @@ Commands:
                          the eight channels, or "off" to isolate all of them.
   mock-whalepod [--listen 127.0.0.1:5000]
                          Run loopback mock firmware for GUI development/testing.
+  mock-airshark [--listen 127.0.0.1:5000]
+                         Run loopback Airshark firmware for GUI development/testing.
   version                Print the binary's version and exit.
 
 Transport selection (place before the command):
@@ -2632,6 +2657,8 @@ func Main() {
 		err = cmdFlash(rest)
 	case "mock-whalepod":
 		err = cmdMockWhalepod(rest)
+	case "mock-airshark":
+		err = cmdMockAirshark(rest)
 	case "version":
 		fmt.Println(buildinfo.Version)
 		return

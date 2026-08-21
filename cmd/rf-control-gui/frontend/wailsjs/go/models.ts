@@ -1,5 +1,25 @@
 export namespace gui {
 
+	export class AirsharkRequest {
+	    band: string;
+	    attenuationDb: number;
+	    calAttenuationDb: number;
+	    channelsEnabled: boolean;
+	    calibrationEnabled: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new AirsharkRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.band = source["band"];
+	        this.attenuationDb = source["attenuationDb"];
+	        this.calAttenuationDb = source["calAttenuationDb"];
+	        this.channelsEnabled = source["channelsEnabled"];
+	        this.calibrationEnabled = source["calibrationEnabled"];
+	    }
+	}
 	export class BarracudaTuningProfile {
 	    mode: string;
 	    if_frequency_mhz?: number;
@@ -49,6 +69,8 @@ export namespace gui {
 	    boardLabel: string;
 	    barracuda: boolean;
 	    whalepod: boolean;
+	    airshark: boolean;
+	    airsharkBand: string;
 	    mode: string;
 	    ifFrequencyMHz: number;
 	    sweepStopIfMHz: number;
@@ -86,6 +108,8 @@ export namespace gui {
 	        this.boardLabel = source["boardLabel"];
 	        this.barracuda = source["barracuda"];
 	        this.whalepod = source["whalepod"];
+	        this.airshark = source["airshark"];
+	        this.airsharkBand = source["airsharkBand"];
 	        this.mode = source["mode"];
 	        this.ifFrequencyMHz = source["ifFrequencyMHz"];
 	        this.sweepStopIfMHz = source["sweepStopIfMHz"];
@@ -353,6 +377,7 @@ export namespace gui {
 	    channels_enabled?: boolean;
 	    cal_enabled?: boolean;
 	    cal_source_internal?: boolean;
+	    rf_band?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new TuningProfile(source);
@@ -366,6 +391,7 @@ export namespace gui {
 	        this.channels_enabled = source["channels_enabled"];
 	        this.cal_enabled = source["cal_enabled"];
 	        this.cal_source_internal = source["cal_source_internal"];
+	        this.rf_band = source["rf_band"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

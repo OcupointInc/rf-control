@@ -1,6 +1,6 @@
 // Package gui contains the transport-agnostic application service used by the
-// Wails desktop frontend. It deliberately exposes only customer-safe
-// Barracuda operations plus common discovery, status, and network management.
+// Wails desktop frontend. It deliberately exposes only customer-safe board
+// controls plus common discovery, status, and network management.
 package gui
 
 import (
@@ -65,6 +65,8 @@ type DeviceStatus struct {
 	BoardLabel              string  `json:"boardLabel"`
 	Barracuda               bool    `json:"barracuda"`
 	Whalepod                bool    `json:"whalepod"`
+	Airshark                bool    `json:"airshark"`
+	AirsharkBand            string  `json:"airsharkBand"`
 	Mode                    string  `json:"mode"`
 	IFFrequencyMHz          int32   `json:"ifFrequencyMHz"`
 	SweepStopIFMHz          int32   `json:"sweepStopIfMHz"`
@@ -128,6 +130,17 @@ type WhalepodRequest struct {
 	CalSourceInternal  bool  `json:"calSourceInternal"`
 }
 
+// AirsharkRequest is a complete pending Airshark (firmware board type
+// "straps") control state. A band preset programs the three switch banks and
+// LO together; the remaining fields are then applied as one transaction.
+type AirsharkRequest struct {
+	Band               string `json:"band"`
+	AttenuationDB      int32  `json:"attenuationDb"`
+	CalAttenuationDB   int32  `json:"calAttenuationDb"`
+	ChannelsEnabled    bool   `json:"channelsEnabled"`
+	CalibrationEnabled bool   `json:"calibrationEnabled"`
+}
+
 // TuningProfile is intentionally identical to the CLI `apply` command's
 // customer-facing Barracuda JSON block, so a file saved in the GUI can be used
 // later by either the GUI or this same executable in CLI mode.
@@ -138,6 +151,7 @@ type TuningProfile struct {
 	ChannelsEnabled    *bool                   `json:"channels_enabled,omitempty"`
 	CalibrationEnabled *bool                   `json:"cal_enabled,omitempty"`
 	CalSourceInternal  *bool                   `json:"cal_source_internal,omitempty"`
+	RFBand             *string                 `json:"rf_band,omitempty"`
 }
 
 type BarracudaTuningProfile struct {
@@ -153,10 +167,10 @@ type BarracudaTuningProfile struct {
 
 func ValidateTuningProfile(profile TuningProfile) error {
 	config := profile.Barracuda
-	whalepodFields := profile.AttenuationDB != nil || profile.CalAttenuationDB != nil ||
+	sharedFields := profile.AttenuationDB != nil || profile.CalAttenuationDB != nil ||
 		profile.ChannelsEnabled != nil || profile.CalibrationEnabled != nil || profile.CalSourceInternal != nil
 	if config == nil {
-		if !whalepodFields {
+		if !sharedFields && profile.RFBand == nil {
 			return fmt.Errorf("configuration profile does not contain supported controls")
 		}
 		for _, value := range []struct {
@@ -170,10 +184,18 @@ func ValidateTuningProfile(profile TuningProfile) error {
 				return fmt.Errorf("%s must be 0–31 dB", value.name)
 			}
 		}
+		if profile.RFBand != nil {
+			if profile.CalSourceInternal != nil {
+				return fmt.Errorf("an Airshark profile cannot include Whalepod calibration-source control")
+			}
+			if _, err := parseAirsharkBand(*profile.RFBand); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
-	if whalepodFields {
-		return fmt.Errorf("a Barracuda profile cannot include Whalepod controls")
+	if sharedFields || profile.RFBand != nil {
+		return fmt.Errorf("a Barracuda profile cannot include Airshark or Whalepod controls")
 	}
 	config.Mode = strings.ToLower(strings.TrimSpace(config.Mode))
 	if _, err := externalClock(config.Clock); err != nil {
@@ -240,6 +262,7 @@ type deviceClient interface {
 	SetChannelsEnabled(bool) error
 	SetCalEnabled(bool) error
 	SetCalSource(bool) error
+	SetRfBand(pb.RfBand) error
 }
 
 type session struct {
@@ -620,6 +643,51 @@ func (s *Service) ConfigureWhalepod(request WhalepodRequest) (DeviceSnapshot, er
 	return s.refreshLocked()
 }
 
+// ConfigureAirshark applies a customer-facing Airshark band preset and the
+// complete frontend state. Power-off happens first and power-on last so routing
+// and attenuation settle before an enabled frontend can pass RF.
+func (s *Service) ConfigureAirshark(request AirsharkRequest) (DeviceSnapshot, error) {
+	band, err := parseAirsharkBand(request.Band)
+	if err != nil {
+		return DeviceSnapshot{}, err
+	}
+	if request.AttenuationDB < 0 || request.AttenuationDB > 31 {
+		return DeviceSnapshot{}, fmt.Errorf("frontend attenuation must be 0–31 dB")
+	}
+	if request.CalAttenuationDB < 0 || request.CalAttenuationDB > 31 {
+		return DeviceSnapshot{}, fmt.Errorf("calibration attenuation must be 0–31 dB")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireAirsharkLocked(); err != nil {
+		return DeviceSnapshot{}, err
+	}
+	if !request.ChannelsEnabled {
+		if err := s.active.client.SetChannelsEnabled(false); err != nil {
+			return DeviceSnapshot{}, fmt.Errorf("turn frontend power off: %w", err)
+		}
+	}
+	if err := s.active.client.SetRfBand(band); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("select RF band: %w", err)
+	}
+	if err := s.active.client.SetAttenuation(request.AttenuationDB); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set frontend attenuation: %w", err)
+	}
+	if err := s.active.client.SetCalAttenuation(request.CalAttenuationDB); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set calibration attenuation: %w", err)
+	}
+	if err := s.active.client.SetCalEnabled(request.CalibrationEnabled); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("select RF path: %w", err)
+	}
+	if request.ChannelsEnabled {
+		if err := s.active.client.SetChannelsEnabled(true); err != nil {
+			return DeviceSnapshot{}, fmt.Errorf("turn frontend power on: %w", err)
+		}
+	}
+	return s.refreshLocked()
+}
+
 // MaximumAttenuation applies the Barracuda DSA's 31.75 dB maximum. It does not
 // claim to electrically disconnect the output; the UI labels it accordingly.
 func (s *Service) MaximumAttenuation() (DeviceSnapshot, error) {
@@ -804,6 +872,16 @@ func (s *Service) requireWhalepodLocked() error {
 	return nil
 }
 
+func (s *Service) requireAirsharkLocked() error {
+	if s.active == nil {
+		return fmt.Errorf("no device is connected")
+	}
+	if s.active.status.GetBoardType() != "straps" {
+		return fmt.Errorf("Airshark controls are unavailable for %s", boardLabel(s.active.status.GetBoardType()))
+	}
+	return nil
+}
+
 func (s *Service) snapshotLocked() DeviceSnapshot {
 	if s.active == nil {
 		return DeviceSnapshot{}
@@ -812,7 +890,7 @@ func (s *Service) snapshotLocked() DeviceSnapshot {
 		Connected: true, Endpoint: s.active.endpoint,
 		Network:         networkFromConfig(s.active.config),
 		Status:          statusFromResponse(s.active),
-		CustomerControl: s.active.status.GetBoardType() == "barracuda" || s.active.status.GetBoardType() == "whalepod",
+		CustomerControl: s.active.status.GetBoardType() == "barracuda" || s.active.status.GetBoardType() == "whalepod" || s.active.status.GetBoardType() == "straps",
 	}
 }
 
@@ -820,7 +898,7 @@ func statusFromResponse(current *session) DeviceStatus {
 	status := current.status
 	board := status.GetBoardType()
 	out := DeviceStatus{
-		BoardType: board, BoardLabel: boardLabel(board), Barracuda: board == "barracuda", Whalepod: board == "whalepod",
+		BoardType: board, BoardLabel: boardLabel(board), Barracuda: board == "barracuda", Whalepod: board == "whalepod", Airshark: board == "straps",
 		AttenuationDB:         float64(status.GetAttenuationDb()),
 		TemperatureAvailable:  status.GetMcuTemperatureC() != 0,
 		TemperatureC:          float64(status.GetMcuTemperatureC()),
@@ -834,6 +912,9 @@ func statusFromResponse(current *session) DeviceStatus {
 		out.MixerSwitch = status.GetMixerSwitch().String()
 		out.IFSwitch = status.GetIfSwitch().String()
 		out.RFSwitchChannel = status.GetRfSwitchChannel()
+		if board == "straps" {
+			out.AirsharkBand = airsharkBandFromStatus(status)
+		}
 		return out
 	}
 	out.Clock = "internal"
@@ -935,6 +1016,60 @@ func externalClock(value string) (bool, error) {
 	}
 }
 
+var airsharkBands = map[string]pb.RfBand{
+	"10-900":    pb.RfBand_RF_BAND_10_900MHZ,
+	"0-900":     pb.RfBand_RF_BAND_10_900MHZ,
+	"900-1800":  pb.RfBand_RF_BAND_900_1800MHZ,
+	"1800-2700": pb.RfBand_RF_BAND_1800_2700MHZ,
+	"2700-3600": pb.RfBand_RF_BAND_2700_3600MHZ,
+	"3600-4500": pb.RfBand_RF_BAND_3600_4500MHZ,
+}
+
+func parseAirsharkBand(value string) (pb.RfBand, error) {
+	key := strings.ToLower(strings.TrimSpace(value))
+	key = strings.TrimSuffix(key, "mhz")
+	key = strings.TrimSpace(key)
+	if band, ok := airsharkBands[key]; ok {
+		return band, nil
+	}
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "RF_BAND_10_900MHZ":
+		return pb.RfBand_RF_BAND_10_900MHZ, nil
+	case "RF_BAND_900_1800MHZ":
+		return pb.RfBand_RF_BAND_900_1800MHZ, nil
+	case "RF_BAND_1800_2700MHZ":
+		return pb.RfBand_RF_BAND_1800_2700MHZ, nil
+	case "RF_BAND_2700_3600MHZ":
+		return pb.RfBand_RF_BAND_2700_3600MHZ, nil
+	case "RF_BAND_3600_4500MHZ":
+		return pb.RfBand_RF_BAND_3600_4500MHZ, nil
+	}
+	return 0, fmt.Errorf("Airshark RF band must be 10-900, 900-1800, 1800-2700, 2700-3600, or 3600-4500 MHz")
+}
+
+func airsharkBandFromStatus(status *pb.GetStatusResponse) string {
+	type preset struct {
+		lo    int32
+		rf    pb.RfSwitchOption
+		mixer pb.MixerSwitchOption
+		ifSw  pb.IfSwitchOption
+	}
+	presets := map[string]preset{
+		"10-900":    {0, pb.RfSwitchOption_RF_SWITCH_OPTION_2GHZ_LPF, pb.MixerSwitchOption_MIXER_SWITCH_OPTION_BYPASS, pb.IfSwitchOption_IF_SWITCH_OPTION_900MHZ_LPF},
+		"900-1800":  {1800, pb.RfSwitchOption_RF_SWITCH_OPTION_2GHZ_LPF, pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER, pb.IfSwitchOption_IF_SWITCH_OPTION_900MHZ_LPF},
+		"1800-2700": {3500, pb.RfSwitchOption_RF_SWITCH_OPTION_4GHZ_LPF, pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER, pb.IfSwitchOption_IF_SWITCH_OPTION_1_2GHZ_BANDPASS},
+		"2700-3600": {4300, pb.RfSwitchOption_RF_SWITCH_OPTION_4GHZ_LPF, pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER, pb.IfSwitchOption_IF_SWITCH_OPTION_1_2GHZ_BANDPASS},
+		"3600-4500": {5100, pb.RfSwitchOption_RF_SWITCH_OPTION_4GHZ_LPF, pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER, pb.IfSwitchOption_IF_SWITCH_OPTION_1_2GHZ_BANDPASS},
+	}
+	for name, preset := range presets {
+		if status.GetLoFrequencyMhz() == preset.lo && status.GetRfSwitch() == preset.rf &&
+			status.GetMixerSwitch() == preset.mixer && status.GetIfSwitch() == preset.ifSw {
+			return name
+		}
+	}
+	return ""
+}
+
 func boardLabel(board string) string {
 	switch board {
 	case "barracuda":
@@ -944,7 +1079,7 @@ func boardLabel(board string) string {
 	case "whalepod_automation":
 		return "Whalepod Automation"
 	case "straps":
-		return "STRAPS"
+		return "Airshark"
 	case "bc":
 		return "Black Canyon"
 	case "rf_switch":

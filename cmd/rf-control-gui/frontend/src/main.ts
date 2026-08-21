@@ -1,6 +1,7 @@
 import './style.css';
 
 import {
+  ConfigureAirshark,
   ConfigureCW,
   ConfigureSweep,
   ConfigureWhalepod,
@@ -43,6 +44,8 @@ type DeviceStatus = {
   boardLabel: string;
   barracuda: boolean;
   whalepod: boolean;
+  airshark: boolean;
+  airsharkBand: string;
   mode: string;
   ifFrequencyMHz: number;
   sweepStopIfMHz: number;
@@ -95,6 +98,7 @@ type TuningProfile = {
   channels_enabled?: boolean;
   cal_enabled?: boolean;
   cal_source_internal?: boolean;
+  rf_band?: string;
 };
 type Tab = 'control' | 'status' | 'network';
 
@@ -128,6 +132,13 @@ const state = {
     channelsEnabled: false,
     calibrationEnabled: false,
     calSourceInternal: true,
+  },
+  airsharkControl: {
+    band: '900-1800',
+    attenuationDb: 0,
+    calAttenuationDb: 0,
+    channelsEnabled: false,
+    calibrationEnabled: false,
   },
   networkInput: '',
   networkPlan: null as NetworkPlan | null,
@@ -170,7 +181,7 @@ const statusStrip = (status: DeviceStatus): string => `
   <div class="status-strip">
     <span class="chip good"><i></i>Connected</span>
     ${status.barracuda ? `<span class="chip ${status.rfEnabled ? 'good' : 'bad'}"><i></i>RF: ${status.rfEnabled ? 'On' : 'Off'}</span>` : ''}
-    ${status.whalepod ? `<span class="chip ${status.channelsEnabled ? 'good' : 'bad'}"><i></i>Frontends: ${status.channelsEnabled ? 'On' : 'Off'}</span>` : ''}
+    ${status.whalepod || status.airshark ? `<span class="chip ${status.channelsEnabled ? 'good' : 'bad'}"><i></i>Frontends: ${status.channelsEnabled ? 'On' : 'Off'}</span>` : ''}
     ${lockChip('Signal', status.signalLockApplicable, status.signalLocked)}
     ${lockChip('External reference', status.referenceLockApplicable, status.referenceLocked)}
     ${status.temperatureAvailable ? `<span class="chip neutral">${status.temperatureC.toFixed(1)} °C${status.temperatureBootSample ? ' boot sample' : ''}</span>` : ''}
@@ -253,6 +264,7 @@ function renderTabs(snapshot: Snapshot): string {
 
 function renderControl(snapshot: Snapshot): string {
   if (snapshot.status.whalepod) return renderWhalepodControl(snapshot);
+  if (snapshot.status.airshark) return renderAirsharkControl(snapshot);
   return renderBarracudaControl(snapshot);
 }
 
@@ -298,7 +310,8 @@ function renderBarracudaFacts(status: DeviceStatus): string {
 function renderStatus(snapshot: Snapshot): string {
   const status = snapshot.status;
   const boardSpecific = status.barracuda ? renderBarracudaFacts(status)
-    : status.whalepod ? renderWhalepodFacts(status) : renderGenericFacts(status);
+    : status.whalepod ? renderWhalepodFacts(status)
+    : status.airshark ? renderAirsharkFacts(status) : renderGenericFacts(status);
   return `
     <section class="content">
       <div class="section-intro"><div><p class="eyebrow">Read-only telemetry</p><h2>Device status</h2></div><button class="secondary" id="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh now</button></div>
@@ -426,6 +439,11 @@ function bindEvents(): void {
     readWhalepodInputs();
     void applyWhalepodControl();
   });
+  document.querySelector<HTMLFormElement>('#airshark-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    readAirsharkInputs();
+    void applyAirsharkControl();
+  });
   document.querySelector<HTMLInputElement>('#rf-enabled')?.addEventListener('change', (event) => {
     state.control.rfEnabled = (event.target as HTMLInputElement).checked;
     render();
@@ -443,6 +461,21 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLInputElement>('input[name="cal-source"]').forEach((input) => input.addEventListener('change', () => {
     readWhalepodInputs();
     state.whalepodControl.calSourceInternal = input.value === 'internal';
+    render();
+  }));
+  document.querySelector<HTMLInputElement>('#airshark-frontends-enabled')?.addEventListener('change', (event) => {
+    readAirsharkInputs();
+    state.airsharkControl.channelsEnabled = (event.target as HTMLInputElement).checked;
+    render();
+  });
+  document.querySelector<HTMLSelectElement>('#airshark-band')?.addEventListener('change', (event) => {
+    readAirsharkInputs();
+    state.airsharkControl.band = (event.target as HTMLSelectElement).value;
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>('input[name="airshark-path"]').forEach((input) => input.addEventListener('change', () => {
+    readAirsharkInputs();
+    state.airsharkControl.calibrationEnabled = input.value === 'cal';
     render();
   }));
   document.querySelector('#load-tuning')?.addEventListener('click', () => void loadTuningProfile());
@@ -463,6 +496,10 @@ function bindEvents(): void {
 function readControlInputs(): void {
   if (state.snapshot?.status.whalepod) {
     readWhalepodInputs();
+    return;
+  }
+  if (state.snapshot?.status.airshark) {
+    readAirsharkInputs();
     return;
   }
   const numberValue = (selector: string, fallback: number): number => {
@@ -553,6 +590,63 @@ function renderWhalepodFacts(status: DeviceStatus): string {
   </dl>`;
 }
 
+function readAirsharkInputs(): void {
+  const band = document.querySelector<HTMLSelectElement>('#airshark-band');
+  const frontend = document.querySelector<HTMLInputElement>('#airshark-frontend-attenuation');
+  const calibration = document.querySelector<HTMLInputElement>('#airshark-cal-attenuation');
+  if (band) state.airsharkControl.band = band.value;
+  if (frontend) state.airsharkControl.attenuationDb = Number(frontend.value);
+  if (calibration) state.airsharkControl.calAttenuationDb = Number(calibration.value);
+  state.airsharkControl.channelsEnabled = document.querySelector<HTMLInputElement>('#airshark-frontends-enabled')?.checked
+    ?? state.airsharkControl.channelsEnabled;
+}
+
+function renderAirsharkControl(snapshot: Snapshot): string {
+  const control = state.airsharkControl;
+  const status = snapshot.status;
+  const powerPending = control.channelsEnabled !== status.channelsEnabled;
+  const anyPending = powerPending || control.band !== status.airsharkBand
+    || control.attenuationDb !== status.attenuationDb
+    || control.calAttenuationDb !== status.calAttenuationDb
+    || control.calibrationEnabled !== status.calibrationEnabled;
+  const bands = ['10-900', '900-1800', '1800-2700', '2700-3600', '3600-4500'];
+  return `
+    <section class="content control-layout">
+      <div class="control-card">
+        <div class="section-intro"><div><p class="eyebrow">Airshark RF frontend</p><h2>Mode</h2></div><label class="rf-slider-control ${control.channelsEnabled ? 'on' : 'off'} ${powerPending ? 'pending' : ''}"><span><b>FRONTENDS ${control.channelsEnabled ? 'ON' : 'OFF'}</b><small>${powerPending ? 'Change pending' : 'Applied state'}</small></span><input id="airshark-frontends-enabled" type="checkbox" ${control.channelsEnabled ? 'checked' : ''} ${state.busy ? 'disabled' : ''}><i aria-hidden="true"></i></label></div>
+        <form id="airshark-form">
+          <div class="field-row airshark-settings">
+            <div class="field"><label for="airshark-band">RF band</label><select id="airshark-band" required>${bands.map((band) => `<option value="${band}" ${control.band === band ? 'selected' : ''}>${band} MHz</option>`).join('')}</select><small>The preset coordinates the RF, mixer, IF switches, and LO.</small></div>
+            <div class="field"><label for="airshark-frontend-attenuation">Frontend attenuation</label><div class="input-unit"><input id="airshark-frontend-attenuation" type="number" min="0" max="31" step="1" value="${control.attenuationDb}" required><span>dB</span></div><small>Digital attenuation, 0–31 dB.</small></div>
+          </div>
+          <div class="calibration-controls ${control.calibrationEnabled ? '' : 'inactive'}">
+            <div class="calibration-heading"><div><p class="eyebrow">Signal path</p><h3>${control.calibrationEnabled ? 'Calibration path selected' : 'Through path selected'}</h3></div><span>${control.calibrationEnabled ? 'CAL' : 'THROUGH'}</span></div>
+            <div class="field-row airshark-settings">
+              <fieldset class="field"><legend>RF path</legend><div class="radio-row"><label><input type="radio" name="airshark-path" value="through" ${!control.calibrationEnabled ? 'checked' : ''}>Through</label><label><input type="radio" name="airshark-path" value="cal" ${control.calibrationEnabled ? 'checked' : ''}>Cal</label></div><small>Select the through path or route the calibration input.</small></fieldset>
+              <div class="field"><label for="airshark-cal-attenuation">Calibration attenuation</label><div class="input-unit"><input id="airshark-cal-attenuation" type="number" min="0" max="31" step="1" value="${control.calAttenuationDb}" required><span>dB</span></div><small>Calibration-path digital attenuation, 0–31 dB.</small></div>
+            </div>
+          </div>
+          <div class="form-actions"><button class="primary large" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Applying…' : 'Apply'}</button><div class="profile-actions"><button class="secondary" type="button" id="load-tuning" ${state.busy ? 'disabled' : ''}>Load</button><button class="secondary export-profile" type="button" id="export-tuning" ${state.busy ? 'disabled' : ''}>Export</button></div><small>${anyPending ? 'Settings changed · press Apply to update hardware.' : 'Export saves this applied state as CLI-ready JSON.'}</small></div>
+        </form>
+      </div>
+      <aside class="live-panel"><p class="eyebrow">Live state</p><h3>${status.airsharkBand ? `${status.airsharkBand} MHz` : 'Custom routing'}</h3>${renderAirsharkFacts(status)}</aside>
+    </section>`;
+}
+
+function renderAirsharkFacts(status: DeviceStatus): string {
+  return `<dl class="facts">
+    <div><dt>Frontend power</dt><dd class="${status.channelsEnabled ? 'text-good' : 'text-bad'}">${status.channelsEnabled ? 'On' : 'Off'}</dd></div>
+    <div><dt>RF band</dt><dd>${status.airsharkBand ? `${status.airsharkBand} MHz` : 'Custom routing'}</dd></div>
+    <div><dt>Frontend attenuation</dt><dd>${status.attenuationDb.toFixed(0)} dB</dd></div>
+    <div><dt>RF path</dt><dd>${status.calibrationEnabled ? 'Cal' : 'Through'}</dd></div>
+    <div><dt>Calibration attenuation</dt><dd>${status.calAttenuationDb} dB</dd></div>
+    <div><dt>LO frequency</dt><dd>${status.loFrequencyMHz ? `${status.loFrequencyMHz} MHz` : 'Off / bypassed'}</dd></div>
+    <div><dt>RF filter</dt><dd>${escapeHTML(cleanEnum(status.rfSwitch))}</dd></div>
+    <div><dt>Mixer</dt><dd>${escapeHTML(cleanEnum(status.mixerSwitch))}</dd></div>
+    <div><dt>IF filter</dt><dd>${escapeHTML(cleanEnum(status.ifSwitch))}</dd></div>
+  </dl>`;
+}
+
 function clearNotice(): void {
   if (!state.notice) return;
   state.notice = '';
@@ -631,6 +725,13 @@ async function connectDevice(endpoint: Endpoint): Promise<void> {
     state.whalepodControl.calibrationEnabled = result.status.calibrationEnabled;
     state.whalepodControl.calSourceInternal = result.status.calSourceInternal;
   }
+  if (result.status.airshark) {
+    state.airsharkControl.band = result.status.airsharkBand || state.airsharkControl.band;
+    state.airsharkControl.attenuationDb = result.status.attenuationDb;
+    state.airsharkControl.calAttenuationDb = result.status.calAttenuationDb;
+    state.airsharkControl.channelsEnabled = result.status.channelsEnabled;
+    state.airsharkControl.calibrationEnabled = result.status.calibrationEnabled;
+  }
   render();
 }
 
@@ -696,6 +797,27 @@ async function applyWhalepodControl(): Promise<void> {
   render();
 }
 
+async function applyAirsharkControl(): Promise<void> {
+  const control = state.airsharkControl;
+  const message = `Airshark configuration applied · ${control.band} MHz · frontends ${control.channelsEnabled ? 'on' : 'off'}`;
+  const result = await withAction(message, () => ConfigureAirshark({
+    band: control.band,
+    attenuationDb: control.attenuationDb,
+    calAttenuationDb: control.calAttenuationDb,
+    channelsEnabled: control.channelsEnabled,
+    calibrationEnabled: control.calibrationEnabled,
+  }) as Promise<Snapshot>);
+  if (result) {
+    state.snapshot = result;
+    state.airsharkControl.band = result.status.airsharkBand || control.band;
+    state.airsharkControl.attenuationDb = result.status.attenuationDb;
+    state.airsharkControl.calAttenuationDb = result.status.calAttenuationDb;
+    state.airsharkControl.channelsEnabled = result.status.channelsEnabled;
+    state.airsharkControl.calibrationEnabled = result.status.calibrationEnabled;
+  }
+  render();
+}
+
 function tuningProfileFromControl(): TuningProfile {
   if (state.snapshot?.status.whalepod) {
     const control = state.whalepodControl;
@@ -705,6 +827,16 @@ function tuningProfileFromControl(): TuningProfile {
       channels_enabled: control.channelsEnabled,
       cal_enabled: control.calibrationEnabled,
       cal_source_internal: control.calSourceInternal,
+    };
+  }
+  if (state.snapshot?.status.airshark) {
+    const control = state.airsharkControl;
+    return {
+      rf_band: control.band,
+      attenuation_db: control.attenuationDb,
+      cal_attenuation_db: control.calAttenuationDb,
+      channels_enabled: control.channelsEnabled,
+      cal_enabled: control.calibrationEnabled,
     };
   }
   const control = state.control;
@@ -756,12 +888,23 @@ async function loadTuningProfile(): Promise<void> {
     const profile = await LoadTuningProfile() as TuningProfile;
     if (state.snapshot?.status.whalepod) {
       if (profile.barracuda) throw new Error('This is a Barracuda profile. Connect a Barracuda to load it.');
+      if (profile.rf_band) throw new Error('This is an Airshark profile. Connect an Airshark to load it.');
       const control = state.whalepodControl;
       control.attenuationDb = profile.attenuation_db ?? control.attenuationDb;
       control.calAttenuationDb = profile.cal_attenuation_db ?? control.calAttenuationDb;
       control.channelsEnabled = profile.channels_enabled ?? control.channelsEnabled;
       control.calibrationEnabled = profile.cal_enabled ?? control.calibrationEnabled;
       control.calSourceInternal = profile.cal_source_internal ?? control.calSourceInternal;
+    } else if (state.snapshot?.status.airshark) {
+      if (profile.barracuda) throw new Error('This is a Barracuda profile. Connect a Barracuda to load it.');
+      if (profile.cal_source_internal !== undefined) throw new Error('This is a Whalepod profile. Connect a Whalepod to load it.');
+      if (!profile.rf_band) throw new Error('The Airshark profile is missing rf_band.');
+      const control = state.airsharkControl;
+      control.band = profile.rf_band;
+      control.attenuationDb = profile.attenuation_db ?? control.attenuationDb;
+      control.calAttenuationDb = profile.cal_attenuation_db ?? control.calAttenuationDb;
+      control.channelsEnabled = profile.channels_enabled ?? control.channelsEnabled;
+      control.calibrationEnabled = profile.cal_enabled ?? control.calibrationEnabled;
     } else {
       const config = profile?.barracuda;
       if (!config) throw new Error('This is a Whalepod profile. Connect a Whalepod to load it.');
@@ -834,7 +977,7 @@ async function applyIPAddress(): Promise<void> {
 function boardName(board: string): string {
   const names: Record<string, string> = {
     barracuda: 'Barracuda', whalepod: 'Whalepod', whalepod_automation: 'Whalepod Automation',
-    straps: 'STRAPS', bc: 'Black Canyon', rf_switch: 'RF Switch',
+    straps: 'Airshark', bc: 'Black Canyon', rf_switch: 'RF Switch',
   };
   return names[board] || board || 'Unknown device';
 }

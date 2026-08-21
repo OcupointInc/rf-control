@@ -52,6 +52,10 @@ func (a *App) ConfigureWhalepod(request controlgui.WhalepodRequest) (controlgui.
 	return a.service.ConfigureWhalepod(request)
 }
 
+func (a *App) ConfigureAirshark(request controlgui.AirsharkRequest) (controlgui.DeviceSnapshot, error) {
+	return a.service.ConfigureAirshark(request)
+}
+
 func (a *App) SetMaximumAttenuation() (controlgui.DeviceSnapshot, error) {
 	return a.service.MaximumAttenuation()
 }
@@ -68,6 +72,9 @@ func (a *App) SaveTuningProfile(profile controlgui.TuningProfile) (string, error
 		return "", fmt.Errorf("application is not ready")
 	}
 	name := "whalepod-control.json"
+	if profile.RFBand != nil {
+		name = fmt.Sprintf("airshark-%s.json", strings.ReplaceAll(*profile.RFBand, "-", "_"))
+	}
 	if config := profile.Barracuda; config != nil {
 		name = "barracuda-tuning.json"
 		if strings.EqualFold(config.Mode, "cw") {

@@ -117,6 +117,41 @@ func (f *fakeDevice) SetCalSource(value bool) error {
 	f.status.CalSourceInternal = value
 	return nil
 }
+func (f *fakeDevice) SetRfBand(value pb.RfBand) error {
+	f.whalepodCalls = append(f.whalepodCalls, "band")
+	applyAirsharkPreset(f.status, value)
+	return nil
+}
+
+func applyAirsharkPreset(status *pb.GetStatusResponse, band pb.RfBand) {
+	switch band {
+	case pb.RfBand_RF_BAND_10_900MHZ:
+		status.LoFrequencyMhz = 0
+		status.RfSwitch = pb.RfSwitchOption_RF_SWITCH_OPTION_2GHZ_LPF
+		status.MixerSwitch = pb.MixerSwitchOption_MIXER_SWITCH_OPTION_BYPASS
+		status.IfSwitch = pb.IfSwitchOption_IF_SWITCH_OPTION_900MHZ_LPF
+	case pb.RfBand_RF_BAND_900_1800MHZ:
+		status.LoFrequencyMhz = 1800
+		status.RfSwitch = pb.RfSwitchOption_RF_SWITCH_OPTION_2GHZ_LPF
+		status.MixerSwitch = pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER
+		status.IfSwitch = pb.IfSwitchOption_IF_SWITCH_OPTION_900MHZ_LPF
+	case pb.RfBand_RF_BAND_1800_2700MHZ:
+		status.LoFrequencyMhz = 3500
+		status.RfSwitch = pb.RfSwitchOption_RF_SWITCH_OPTION_4GHZ_LPF
+		status.MixerSwitch = pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER
+		status.IfSwitch = pb.IfSwitchOption_IF_SWITCH_OPTION_1_2GHZ_BANDPASS
+	case pb.RfBand_RF_BAND_2700_3600MHZ:
+		status.LoFrequencyMhz = 4300
+		status.RfSwitch = pb.RfSwitchOption_RF_SWITCH_OPTION_4GHZ_LPF
+		status.MixerSwitch = pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER
+		status.IfSwitch = pb.IfSwitchOption_IF_SWITCH_OPTION_1_2GHZ_BANDPASS
+	case pb.RfBand_RF_BAND_3600_4500MHZ:
+		status.LoFrequencyMhz = 5100
+		status.RfSwitch = pb.RfSwitchOption_RF_SWITCH_OPTION_4GHZ_LPF
+		status.MixerSwitch = pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER
+		status.IfSwitch = pb.IfSwitchOption_IF_SWITCH_OPTION_1_2GHZ_BANDPASS
+	}
+}
 
 func barracudaFake() *fakeDevice {
 	return &fakeDevice{
@@ -149,6 +184,23 @@ func whalepodFake() *fakeDevice {
 			BoardType: "whalepod", AttenuationDb: 3, CalAttenuationDb: 7,
 			ChannelsEnabled: true, CalibrationEnabled: false, CalSourceInternal: true,
 		},
+	}
+}
+
+func airsharkFake() *fakeDevice {
+	status := &pb.GetStatusResponse{
+		BoardType: "straps", AttenuationDb: 4, CalAttenuationDb: 8,
+		ChannelsEnabled: true, CalibrationEnabled: false,
+	}
+	applyAirsharkPreset(status, pb.RfBand_RF_BAND_900_1800MHZ)
+	return &fakeDevice{
+		config: &pb.GetConfigResponse{
+			StaticIp: []byte{127, 0, 0, 1}, StaticGateway: []byte{127, 0, 0, 1},
+			StaticSubnet: []byte{255, 0, 0, 0}, MdnsHostname: "airshark-mock",
+			MacAddress: []byte{0x02, 0, 0, 0, 0, 4}, SerialNumber: "AIR-MOCK-001",
+			FirmwareVersion: "mock-1.0.0", UniqueBoardId: "MOCK-AIRSHARK",
+		},
+		status: status,
 	}
 }
 
@@ -304,6 +356,117 @@ func TestWhalepodGUIServiceAgainstMockFirmware(t *testing.T) {
 	}
 	if !snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled || snapshot.Status.CalSourceInternal ||
 		snapshot.Status.AttenuationDB != 19 || snapshot.Status.CalAttenuationDB != 11 {
+		t.Fatalf("wire readback = %+v", snapshot.Status)
+	}
+}
+
+func TestValidateAirsharkProfileMatchesCLIApplyShape(t *testing.T) {
+	band := "2700-3600"
+	attenuation, calAttenuation := int32(9), int32(3)
+	channels, calEnabled := true, false
+	profile := TuningProfile{
+		RFBand: &band, AttenuationDB: &attenuation, CalAttenuationDB: &calAttenuation,
+		ChannelsEnabled: &channels, CalibrationEnabled: &calEnabled,
+	}
+	if err := ValidateTuningProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range [][]byte{
+		[]byte(`"rf_band":"2700-3600"`), []byte(`"attenuation_db":9`),
+		[]byte(`"cal_attenuation_db":3`), []byte(`"channels_enabled":true`),
+		[]byte(`"cal_enabled":false`),
+	} {
+		if !bytes.Contains(encoded, field) {
+			t.Fatalf("profile JSON %s is missing %s", encoded, field)
+		}
+	}
+	badBand := "2-20GHz"
+	profile.RFBand = &badBand
+	if err := ValidateTuningProfile(profile); err == nil {
+		t.Fatal("invalid Airshark band was accepted")
+	}
+}
+
+func TestConfigureAirsharkAppliesCompleteStateWithSafePowerOrder(t *testing.T) {
+	fake := airsharkFake()
+	service := serviceWithFake(fake)
+	snapshot, err := service.Connect(Endpoint{Kind: "usb", Address: "COM8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.CustomerControl || !snapshot.Status.Airshark || snapshot.Status.BoardLabel != "Airshark" {
+		t.Fatalf("Airshark did not receive customer controls: %+v", snapshot)
+	}
+
+	snapshot, err = service.ConfigureAirshark(AirsharkRequest{
+		Band: "2700-3600", AttenuationDB: 13, CalAttenuationDB: 6,
+		ChannelsEnabled: false, CalibrationEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOff := []string{"power", "band", "attenuation", "cal-attenuation", "path"}
+	if fmt.Sprint(fake.whalepodCalls) != fmt.Sprint(wantOff) {
+		t.Fatalf("power-off call order = %v, want %v", fake.whalepodCalls, wantOff)
+	}
+	if snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled ||
+		snapshot.Status.AttenuationDB != 13 || snapshot.Status.CalAttenuationDB != 6 ||
+		snapshot.Status.AirsharkBand != "2700-3600" || snapshot.Status.LOFrequencyMHz != 4300 {
+		t.Fatalf("applied Airshark state = %+v", snapshot.Status)
+	}
+
+	fake.whalepodCalls = nil
+	_, err = service.ConfigureAirshark(AirsharkRequest{
+		Band: "3600-4500", AttenuationDB: 7, CalAttenuationDB: 2,
+		ChannelsEnabled: true, CalibrationEnabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOn := []string{"band", "attenuation", "cal-attenuation", "path", "power"}
+	if fmt.Sprint(fake.whalepodCalls) != fmt.Sprint(wantOn) {
+		t.Fatalf("power-on call order = %v, want %v", fake.whalepodCalls, wantOn)
+	}
+}
+
+func TestAirsharkGUIServiceAgainstMockFirmware(t *testing.T) {
+	firmware, err := mockfirmware.ListenAirshark("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = firmware.Serve() }()
+	t.Cleanup(func() { _ = firmware.Close() })
+	port := firmware.Addr().(*net.TCPAddr).Port
+	service := NewService()
+	service.listUSB = func() ([]string, error) { return nil, nil }
+	service.discoverEthernet = func(time.Duration) ([]*pb.DiscoveryResponse, error) { return nil, nil }
+
+	snapshot, err := service.Connect(Endpoint{Kind: "ethernet", Address: "127.0.0.1", Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status.BoardLabel != "Airshark" || snapshot.Network.Firmware != "mock-1.0.0" {
+		t.Fatalf("mock firmware identity = %+v", snapshot)
+	}
+
+	snapshot, err = service.ConfigureAirshark(AirsharkRequest{
+		Band: "1800-2700", AttenuationDB: 17, CalAttenuationDB: 10,
+		ChannelsEnabled: true, CalibrationEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{"band", "attenuation", "cal-attenuation", "path", "power"}
+	if fmt.Sprint(firmware.Calls()) != fmt.Sprint(wantCalls) {
+		t.Fatalf("wire requests = %v, want %v", firmware.Calls(), wantCalls)
+	}
+	if !snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled ||
+		snapshot.Status.AttenuationDB != 17 || snapshot.Status.CalAttenuationDB != 10 ||
+		snapshot.Status.AirsharkBand != "1800-2700" || snapshot.Status.LOFrequencyMHz != 3500 {
 		t.Fatalf("wire readback = %+v", snapshot.Status)
 	}
 }
