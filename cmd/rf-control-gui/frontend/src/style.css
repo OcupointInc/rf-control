@@ -128,6 +128,7 @@ button.large { min-height: 42px; padding: 0 22px; }
 .field-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 .field-row.whalepod-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .field-row.airshark-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.field-row.advanced-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .field-row.black-canyon-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .field-row.output-settings { grid-template-columns: 1fr 1.4fr; margin-top: 18px; padding-top: 20px; border-top: 1px solid var(--line); }
 .calibration-controls { margin-top: 20px; padding: 18px; border: 1px solid #31526d; border-radius: 9px; background: #0d1b2a; transition: border-color .16s, opacity .16s; }
@@ -149,6 +150,25 @@ select { cursor: pointer; }
 .radio-row label + label { border-left: 1px solid #31465e; }
 .radio-row input { width: auto; min-height: auto; accent-color: var(--blue); }
 .form-actions { display: flex; align-items: center; gap: 10px; margin-top: 25px; }
+.advanced-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--line); }
+.tool-panel { min-width: 0; padding: 17px; border: 1px solid #293d53; border-radius: 9px; background: #0c1825; }
+.tool-panel h3 { margin: 6px 0 9px; font-size: 13px; }
+.tool-panel > p:not(.eyebrow) { min-height: 46px; margin: 0 0 13px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.tool-panel code { color: var(--cyan); }
+.firmware-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.firmware-info { margin: 12px 0 0; }
+.firmware-info div { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid #223246; }
+.firmware-info dt, .firmware-info dd { overflow: hidden; margin: 0; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.firmware-info dt { color: var(--muted); }
+.firmware-info dd { color: #dce7f2; font-weight: 700; }
+.diagnostic-summary { margin-top: 12px; padding: 8px 10px; border: 1px solid; border-radius: 6px; font-size: 10px; font-weight: 800; }
+.diagnostic-summary.passed { border-color: #285a46; color: var(--green); }
+.diagnostic-summary.failed { border-color: #653940; color: var(--red); }
+.diagnostic-list { max-height: 180px; margin-top: 7px; overflow: auto; }
+.diagnostic-row { display: flex; justify-content: space-between; gap: 10px; padding: 6px 2px; border-bottom: 1px solid #223246; font-size: 9px; }
+.diagnostic-row span small { color: var(--muted); }
+.diagnostic-row.passed b { color: var(--green); }
+.diagnostic-row.failed b { color: var(--red); }
 .form-actions > small { max-width: 245px; color: #72869e; font-size: 9px; line-height: 1.4; }
 .profile-actions { display: flex; gap: 7px; margin-left: auto; }
 .profile-actions .export-profile { border-color: #315f7d; background: #122b40; color: #dceefa; }
@@ -193,5 +213,6 @@ select { cursor: pointer; }
   .shell { grid-template-columns: 260px minmax(0, 1fr); }
   .control-layout { grid-template-columns: 1fr; }
   .live-panel { position: static; }
+  .advanced-tools { grid-template-columns: 1fr; }
   .busy-line { left: 260px; }
 }

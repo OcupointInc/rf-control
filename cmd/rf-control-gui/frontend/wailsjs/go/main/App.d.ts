@@ -4,6 +4,8 @@ import {gui} from '../models';
 
 export function ConfigureAirshark(arg1:gui.AirsharkRequest):Promise<gui.DeviceSnapshot>;
 
+export function ConfigureAirsharkAdvanced(arg1:gui.AirsharkAdvancedRequest):Promise<gui.DeviceSnapshot>;
+
 export function ConfigureBlackCanyon(arg1:gui.BlackCanyonRequest):Promise<gui.DeviceSnapshot>;
 
 export function ConfigureCW(arg1:gui.CWRequest):Promise<gui.DeviceSnapshot>;
@@ -18,13 +20,19 @@ export function Disconnect():Promise<void>;
 
 export function Discover():Promise<gui.DiscoveryResult>;
 
+export function FlashFirmware(arg1:string):Promise<gui.FirmwareUpdateResult>;
+
 export function GetStatus():Promise<gui.DeviceSnapshot>;
 
 export function LoadTuningProfile():Promise<gui.TuningProfile>;
 
 export function PreviewNetwork(arg1:string):Promise<gui.NetworkPlan>;
 
+export function RunGPIOSelfTest():Promise<gui.GPIOSelfTestResult>;
+
 export function SaveTuningProfile(arg1:gui.TuningProfile,arg2:string):Promise<string>;
+
+export function SelectFirmware():Promise<gui.FirmwareInfo>;
 
 export function SetIPAddress(arg1:string):Promise<gui.NetworkChangeResult>;
 

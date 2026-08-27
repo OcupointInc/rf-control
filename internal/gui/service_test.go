@@ -2,9 +2,11 @@ package gui
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,6 +28,12 @@ type fakeDevice struct {
 	lmxPowerCode   uint32
 	lmxReadBatches [][]uint32
 	whalepodCalls  []string
+	rfSwitch       pb.RfSwitchOption
+	mixerSwitch    pb.MixerSwitchOption
+	ifSwitch       pb.IfSwitchOption
+	pllFrequency   int32
+	selfTest       *pb.GpioSelfTestResponse
+	updatedImage   *client.FirmwareImage
 	closed         int
 	statusDelay    time.Duration
 	statusActive   atomic.Int32
@@ -120,6 +128,21 @@ func (f *fakeDevice) SetCalSource(value bool) error {
 func (f *fakeDevice) SetRfBand(value pb.RfBand) error {
 	f.whalepodCalls = append(f.whalepodCalls, "band")
 	applyAirsharkPreset(f.status, value)
+	return nil
+}
+func (f *fakeDevice) SetSwitches(rf pb.RfSwitchOption, mixer pb.MixerSwitchOption, ifSw pb.IfSwitchOption) error {
+	f.rfSwitch, f.mixerSwitch, f.ifSwitch = rf, mixer, ifSw
+	f.status.RfSwitch, f.status.MixerSwitch, f.status.IfSwitch = rf, mixer, ifSw
+	return nil
+}
+func (f *fakeDevice) SetPllFrequency(value int32) error {
+	f.pllFrequency = value
+	f.status.LoFrequencyMhz = value
+	return nil
+}
+func (f *fakeDevice) GpioSelfTest() (*pb.GpioSelfTestResponse, error) { return f.selfTest, nil }
+func (f *fakeDevice) UpdateFirmware(image *client.FirmwareImage, _ func(uint32, uint32)) error {
+	f.updatedImage = image
 	return nil
 }
 
@@ -444,6 +467,90 @@ func TestConfigureAirsharkAppliesCompleteStateWithSafePowerOrder(t *testing.T) {
 	wantOn := []string{"band", "attenuation", "cal-attenuation", "path", "power"}
 	if fmt.Sprint(fake.whalepodCalls) != fmt.Sprint(wantOn) {
 		t.Fatalf("power-on call order = %v, want %v", fake.whalepodCalls, wantOn)
+	}
+}
+
+func TestAirsharkAdvancedSetsSwitchBanksLOAndAttenuators(t *testing.T) {
+	fake := airsharkFake()
+	service := serviceWithFake(fake)
+	if _, err := service.Connect(Endpoint{Kind: "usb", Address: "COM9"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.ConfigureAirsharkAdvanced(AirsharkAdvancedRequest{
+		RFFilter: 1, MixerPath: 0, IFFilter: 1, LOFrequencyMHz: 3500,
+		FrontendAttenuationDB: 12, CalibrationAttenuationDB: 23,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.rfSwitch != pb.RfSwitchOption_RF_SWITCH_OPTION_2GHZ_LPF ||
+		fake.mixerSwitch != pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER ||
+		fake.ifSwitch != pb.IfSwitchOption_IF_SWITCH_OPTION_1_2GHZ_BANDPASS ||
+		fake.pllFrequency != 3500 || snapshot.Status.AttenuationDB != 12 || snapshot.Status.CalAttenuationDB != 23 {
+		t.Fatalf("advanced state = %+v", snapshot.Status)
+	}
+	for _, request := range []AirsharkAdvancedRequest{
+		{RFFilter: 2}, {MixerPath: -1}, {IFFilter: -1}, {LOFrequencyMHz: 15001},
+		{FrontendAttenuationDB: 32}, {CalibrationAttenuationDB: -1},
+	} {
+		if _, err := service.ConfigureAirsharkAdvanced(request); err == nil {
+			t.Fatalf("invalid request succeeded: %+v", request)
+		}
+	}
+}
+
+func TestAirsharkGPIOSelfTest(t *testing.T) {
+	fake := airsharkFake()
+	fake.selfTest = &pb.GpioSelfTestResponse{AllPassed: false, Pins: []*pb.GpioPinResult{
+		{Pin: 2, Name: "SCK", Passed: true, MinDriveMa: 4},
+		{Pin: 3, Name: "MOSI", Passed: false, Stuck: pb.GpioStuckState_GPIO_STUCK_STATE_LOW},
+	}}
+	service := serviceWithFake(fake)
+	if _, err := service.Connect(Endpoint{Kind: "usb", Address: "COM9"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunGPIOSelfTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AllPassed || len(result.Pins) != 2 || result.Pins[1].Stuck != "LOW" {
+		t.Fatalf("self-test = %+v", result)
+	}
+}
+
+func testFirmwarePath(t *testing.T, board string) string {
+	t.Helper()
+	data := make([]byte, 72)
+	binary.LittleEndian.PutUint32(data[0:4], 0x4F435550)
+	binary.LittleEndian.PutUint32(data[4:8], 0x46574930)
+	copy(data[8:32], board)
+	copy(data[32:48], "1.1.1")
+	copy(data[48:72], "test build")
+	path := t.TempDir() + "/firmware.bin"
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestFlashFirmwareValidatesBoardAndEndsSession(t *testing.T) {
+	fake := airsharkFake()
+	service := serviceWithFake(fake)
+	if _, err := service.Connect(Endpoint{Kind: "usb", Address: "COM9"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.FlashFirmware(testFirmwarePath(t, "whalepod")); err == nil {
+		t.Fatal("mismatched firmware succeeded")
+	}
+	result, err := service.FlashFirmware(testFirmwarePath(t, "straps"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Rebooting || result.Firmware.Version != "1.1.1" || fake.updatedImage == nil {
+		t.Fatalf("update result = %+v, image=%v", result, fake.updatedImage)
+	}
+	if service.active != nil || fake.closed != 1 {
+		t.Fatalf("session remained open: active=%v closed=%d", service.active, fake.closed)
 	}
 }
 

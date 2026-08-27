@@ -36,7 +36,7 @@ const (
 	firmwareMaxStalls       = 100
 )
 
-// FirmwareImage is a validated Barracuda OTA .bin with its embedded identity
+// FirmwareImage is a validated OTA .bin with its embedded identity
 // and whole-image IEEE CRC-32. Data is the exact byte sequence sent to firmware.
 type FirmwareImage struct {
 	Data       []byte
@@ -208,13 +208,31 @@ func UpdateFirmwareTCP(host string, port int, image *FirmwareImage, progress fun
 	return runFirmwareUpdate(transport, image, progress)
 }
 
-// UpdateFirmwareUSB streams image over an already-open Barracuda USB control
+// UpdateFirmwareUSB streams image over an already-open USB control
 // port. The caller still owns usb and should close it when finished.
 func UpdateFirmwareUSB(usb *USBTransport, image *FirmwareImage, progress func(done, total uint32)) error {
 	if usb == nil {
 		return errors.New("USB transport is nil")
 	}
 	return runFirmwareUpdate(&firmwareUSBTransport{usb: usb}, image, progress)
+}
+
+// UpdateFirmware streams image using the transport already owned by c. TCP
+// control sessions switch to the device's dedicated update port; USB reuses
+// the open serial control port.
+func (c *Client) UpdateFirmware(image *FirmwareImage, progress func(done, total uint32)) error {
+	switch transport := c.tx.(type) {
+	case *USBTransport:
+		return UpdateFirmwareUSB(transport, image, progress)
+	case *TCPTransport:
+		host, _, err := net.SplitHostPort(transport.addr)
+		if err != nil {
+			return fmt.Errorf("parse TCP control address: %w", err)
+		}
+		return UpdateFirmwareTCP(host, FirmwareUpdatePort, image, progress)
+	default:
+		return fmt.Errorf("firmware update is unsupported by transport %T", c.tx)
+	}
 }
 
 func runFirmwareUpdate(transport firmwareRoundTripper, image *FirmwareImage, progress func(done, total uint32)) (resultErr error) {

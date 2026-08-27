@@ -1,5 +1,27 @@
 export namespace gui {
 
+	export class AirsharkAdvancedRequest {
+	    rfFilter: number;
+	    mixerPath: number;
+	    ifFilter: number;
+	    loFrequencyMHz: number;
+	    frontendAttenuationDb: number;
+	    calibrationAttenuationDb: number;
+
+	    static createFrom(source: any = {}) {
+	        return new AirsharkAdvancedRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.rfFilter = source["rfFilter"];
+	        this.mixerPath = source["mixerPath"];
+	        this.ifFilter = source["ifFilter"];
+	        this.loFrequencyMHz = source["loFrequencyMHz"];
+	        this.frontendAttenuationDb = source["frontendAttenuationDb"];
+	        this.calibrationAttenuationDb = source["calibrationAttenuationDb"];
+	    }
+	}
 	export class AirsharkRequest {
 	    band: string;
 	    attenuationDb: number;
@@ -316,6 +338,112 @@ export namespace gui {
 		}
 	}
 
+	export class FirmwareInfo {
+	    path: string;
+	    board: string;
+	    version: string;
+	    buildId: string;
+	    size: number;
+	    crc32: string;
+
+	    static createFrom(source: any = {}) {
+	        return new FirmwareInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.board = source["board"];
+	        this.version = source["version"];
+	        this.buildId = source["buildId"];
+	        this.size = source["size"];
+	        this.crc32 = source["crc32"];
+	    }
+	}
+	export class FirmwareUpdateResult {
+	    firmware: FirmwareInfo;
+	    rebooting: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new FirmwareUpdateResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.firmware = this.convertValues(source["firmware"], FirmwareInfo);
+	        this.rebooting = source["rebooting"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GPIOSelfTestPin {
+	    pin: number;
+	    name: string;
+	    passed: boolean;
+	    stuck: string;
+	    minDriveMa: number;
+
+	    static createFrom(source: any = {}) {
+	        return new GPIOSelfTestPin(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.pin = source["pin"];
+	        this.name = source["name"];
+	        this.passed = source["passed"];
+	        this.stuck = source["stuck"];
+	        this.minDriveMa = source["minDriveMa"];
+	    }
+	}
+	export class GPIOSelfTestResult {
+	    allPassed: boolean;
+	    pins: GPIOSelfTestPin[];
+
+	    static createFrom(source: any = {}) {
+	        return new GPIOSelfTestResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.allPassed = source["allPassed"];
+	        this.pins = this.convertValues(source["pins"], GPIOSelfTestPin);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class NetworkPlan {
 	    ipAddress: string;
 	    gateway: string;

@@ -2,6 +2,7 @@ import './style.css';
 
 import {
   ConfigureAirshark,
+  ConfigureAirsharkAdvanced,
   ConfigureBlackCanyon,
   ConfigureCW,
   ConfigureSweep,
@@ -9,11 +10,14 @@ import {
   Connect,
   Disconnect,
   Discover,
+  FlashFirmware,
   GetStatus,
   LoadTuningProfile,
   PreviewNetwork,
+  RunGPIOSelfTest,
   SaveTuningProfile,
   SetIPAddress,
+  SelectFirmware,
   Version,
 } from '../wailsjs/go/main/App';
 import { gui as GoModels } from '../wailsjs/go/models';
@@ -83,6 +87,9 @@ type Snapshot = {
   customerControl: boolean;
 };
 type NetworkPlan = { ipAddress: string; gateway: string; subnet: string };
+type GPIOSelfTestPin = { pin: number; name: string; passed: boolean; stuck: string; minDriveMa: number };
+type GPIOSelfTestResult = { allPassed: boolean; pins: GPIOSelfTestPin[] };
+type FirmwareInfo = { path: string; board: string; version: string; buildId: string; size: number; crc32: string };
 type BarracudaTuningProfile = {
   mode: 'cw' | 'sweep';
   if_frequency_mhz?: number;
@@ -102,7 +109,7 @@ type TuningProfile = {
   cal_source_internal?: boolean;
   rf_band?: string;
 };
-type Tab = 'control' | 'status' | 'network';
+type Tab = 'control' | 'advanced' | 'status' | 'network';
 
 const scanTimeoutMs = 5000;
 const nominalMaximumOutputDbm = -25;
@@ -142,6 +149,16 @@ const state = {
     channelsEnabled: false,
     calibrationEnabled: false,
   },
+  airsharkAdvanced: {
+    rfFilter: 0,
+    mixerPath: 0,
+    ifFilter: 0,
+    loFrequencyMHz: 0,
+    frontendAttenuationDb: 0,
+    calibrationAttenuationDb: 0,
+  },
+  selfTest: null as GPIOSelfTestResult | null,
+  firmware: null as FirmwareInfo | null,
   blackCanyonControl: {
     attenuationDb: 0,
     channelsEnabled: false,
@@ -263,7 +280,7 @@ function renderHeader(snapshot: Snapshot): string {
 
 function renderTabs(snapshot: Snapshot): string {
   const tabs: Array<[Tab, string]> = snapshot.customerControl
-    ? [['control', 'Control'], ['status', 'Status'], ['network', 'Network']]
+    ? [['control', 'Control'], ...(snapshot.status.airshark ? [['advanced', 'Advanced'] as [Tab, string]] : []), ['status', 'Status'], ['network', 'Network']]
     : [['status', 'Status'], ['network', 'Network']];
   if (!snapshot.customerControl && state.tab === 'control') state.tab = 'status';
   return `<nav class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`).join('')}</nav>`;
@@ -396,6 +413,7 @@ function renderWorkspace(snapshot: Snapshot): string {
   let body = '';
   switch (state.tab) {
     case 'control': body = renderControl(snapshot); break;
+    case 'advanced': body = renderAirsharkAdvanced(snapshot); break;
     case 'network': body = renderNetwork(snapshot); break;
     default: body = renderStatus(snapshot);
   }
@@ -453,6 +471,14 @@ function bindEvents(): void {
     readAirsharkInputs();
     void applyAirsharkControl();
   });
+  document.querySelector<HTMLFormElement>('#airshark-advanced-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    readAirsharkAdvancedInputs();
+    void applyAirsharkAdvanced();
+  });
+  document.querySelector('#run-self-test')?.addEventListener('click', () => void runSelfTest());
+  document.querySelector('#select-firmware')?.addEventListener('click', () => void selectFirmware());
+  document.querySelector('#flash-firmware')?.addEventListener('click', () => void flashFirmware());
   document.querySelector<HTMLFormElement>('#black-canyon-form')?.addEventListener('submit', (event) => {
     event.preventDefault();
     readBlackCanyonInputs();
@@ -629,6 +655,19 @@ function readAirsharkInputs(): void {
     ?? state.airsharkControl.channelsEnabled;
 }
 
+function readAirsharkAdvancedInputs(): void {
+  const numberValue = (selector: string, fallback: number): number => {
+    const input = document.querySelector<HTMLInputElement | HTMLSelectElement>(selector);
+    return input ? Number(input.value) : fallback;
+  };
+  state.airsharkAdvanced.rfFilter = numberValue('#rf-filter', state.airsharkAdvanced.rfFilter);
+  state.airsharkAdvanced.mixerPath = numberValue('#mixer-path', state.airsharkAdvanced.mixerPath);
+  state.airsharkAdvanced.ifFilter = numberValue('#if-filter', state.airsharkAdvanced.ifFilter);
+  state.airsharkAdvanced.loFrequencyMHz = numberValue('#lo-frequency', state.airsharkAdvanced.loFrequencyMHz);
+  state.airsharkAdvanced.frontendAttenuationDb = numberValue('#frontend-attenuation', state.airsharkAdvanced.frontendAttenuationDb);
+  state.airsharkAdvanced.calibrationAttenuationDb = numberValue('#calibration-attenuation', state.airsharkAdvanced.calibrationAttenuationDb);
+}
+
 function renderAirsharkControl(snapshot: Snapshot): string {
   const control = state.airsharkControl;
   const status = snapshot.status;
@@ -673,6 +712,58 @@ function renderAirsharkFacts(status: DeviceStatus): string {
     <div><dt>Mixer</dt><dd>${escapeHTML(cleanEnum(status.mixerSwitch))}</dd></div>
     <div><dt>IF filter</dt><dd>${escapeHTML(cleanEnum(status.ifSwitch))}</dd></div>
   </dl>`;
+}
+
+function renderAirsharkAdvanced(snapshot: Snapshot): string {
+  const advanced = state.airsharkAdvanced;
+  const selfTest = state.selfTest;
+  const firmware = state.firmware;
+  const selfTestRows = selfTest?.pins.map((pin) => `<div class="diagnostic-row ${pin.passed ? 'passed' : 'failed'}">
+    <span>${escapeHTML(pin.name)} <small>GPIO ${pin.pin}</small></span>
+    <b>${pin.passed ? `Pass · ${pin.minDriveMa} mA` : `Fail · stuck ${escapeHTML(pin.stuck.toLowerCase())}`}</b>
+  </div>`).join('') || '';
+  return `
+    <section class="content control-layout">
+      <div class="control-card">
+        <div class="section-intro"><div><p class="eyebrow">Airshark engineering controls</p><h2>Advanced RF frontend</h2></div></div>
+        <form id="airshark-advanced-form">
+          <div class="field-row advanced-fields">
+            <div class="field"><label for="rf-filter">RF filter</label><select id="rf-filter">
+              <option value="0" ${advanced.rfFilter === 0 ? 'selected' : ''}>4 GHz low-pass</option>
+              <option value="1" ${advanced.rfFilter === 1 ? 'selected' : ''}>2 GHz low-pass</option>
+            </select><small>Selects the RF input filter bank.</small></div>
+            <div class="field"><label for="mixer-path">Signal path</label><select id="mixer-path">
+              <option value="0" ${advanced.mixerPath === 0 ? 'selected' : ''}>Mixer</option>
+              <option value="1" ${advanced.mixerPath === 1 ? 'selected' : ''}>Bypass</option>
+            </select><small>Routes through the mixer or around it.</small></div>
+            <div class="field"><label for="if-filter">IF filter</label><select id="if-filter">
+              <option value="0" ${advanced.ifFilter === 0 ? 'selected' : ''}>900 MHz low-pass</option>
+              <option value="1" ${advanced.ifFilter === 1 ? 'selected' : ''}>1.2 GHz band-pass</option>
+            </select><small>Selects the IF output filter bank.</small></div>
+            <div class="field"><label for="lo-frequency">LO frequency</label><div class="input-unit"><input id="lo-frequency" type="number" min="0" max="15000" step="1" value="${advanced.loFrequencyMHz}" required><span>MHz</span></div><small>0–15,000 MHz; zero powers down the LO.</small></div>
+            <div class="field"><label for="frontend-attenuation">Frontend attenuation</label><div class="input-unit"><input id="frontend-attenuation" type="number" min="0" max="31" step="1" value="${advanced.frontendAttenuationDb}" required><span>dB</span></div><small>Shared frontend DSA setting, 0–31 dB.</small></div>
+            <div class="field"><label for="calibration-attenuation">Calibration attenuation</label><div class="input-unit"><input id="calibration-attenuation" type="number" min="0" max="31" step="1" value="${advanced.calibrationAttenuationDb}" required><span>dB</span></div><small>Calibration-path DSA setting, 0–31 dB.</small></div>
+          </div>
+          <div class="callout warning">These engineering settings take effect immediately and can interrupt an active RF path.</div>
+          <div class="form-actions"><button class="primary large" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Applying…' : 'Apply advanced settings'}</button></div>
+        </form>
+        <div class="advanced-tools">
+          <article class="tool-panel">
+            <p class="eyebrow">Hardware diagnostic</p><h3>Control GPIO self-test</h3>
+            <p>Temporarily toggles the RF controls and, on firmware 1.1.1+, attenuation SCK, MOSI, and latch lines.</p>
+            <button class="secondary" id="run-self-test" ${state.busy ? 'disabled' : ''}>Run self-test</button>
+            ${selfTest ? `<div class="diagnostic-summary ${selfTest.allPassed ? 'passed' : 'failed'}">${selfTest.allPassed ? 'All tested GPIOs passed' : 'One or more GPIOs failed'}</div><div class="diagnostic-list">${selfTestRows}</div>` : ''}
+          </article>
+          <article class="tool-panel">
+            <p class="eyebrow">Device firmware</p><h3>Flash OTA image</h3>
+            <p>Select an Ocupoint application <code>.bin</code>. Its embedded board identity is verified before transfer.</p>
+            <div class="firmware-actions"><button class="secondary" id="select-firmware" ${state.busy ? 'disabled' : ''}>Select firmware…</button><button class="primary" id="flash-firmware" ${!firmware || state.busy ? 'disabled' : ''}>Flash and reboot</button></div>
+            ${firmware ? `<dl class="firmware-info"><div><dt>Image</dt><dd>${escapeHTML(firmware.version)}</dd></div><div><dt>Board</dt><dd>${escapeHTML(firmware.board)}</dd></div><div><dt>Build</dt><dd>${escapeHTML(firmware.buildId)}</dd></div><div><dt>CRC-32</dt><dd>${escapeHTML(firmware.crc32)}</dd></div></dl>` : ''}
+          </article>
+        </div>
+      </div>
+      <aside class="live-panel"><p class="eyebrow">Live state</p><h3>Airshark</h3>${renderAirsharkFacts(snapshot.status)}</aside>
+    </section>`;
 }
 
 function readBlackCanyonInputs(): void {
@@ -797,6 +888,7 @@ async function connectDevice(endpoint: Endpoint): Promise<void> {
     state.airsharkControl.calAttenuationDb = result.status.calAttenuationDb;
     state.airsharkControl.channelsEnabled = result.status.channelsEnabled;
     state.airsharkControl.calibrationEnabled = result.status.calibrationEnabled;
+    syncAirsharkAdvanced(result);
   }
   if (result.status.blackCanyon) {
     state.blackCanyonControl.attenuationDb = result.status.attenuationDb;
@@ -818,6 +910,7 @@ async function refreshStatus(showNotice: boolean): Promise<void> {
   try {
     const result = await GetStatus() as Snapshot;
     state.snapshot = result;
+    if (result.status.airshark) syncAirsharkAdvanced(result);
     if (showNotice) {
       state.notice = 'Status refreshed';
       state.noticeKind = 'success';
@@ -886,6 +979,73 @@ async function applyAirsharkControl(): Promise<void> {
     state.airsharkControl.channelsEnabled = result.status.channelsEnabled;
     state.airsharkControl.calibrationEnabled = result.status.calibrationEnabled;
   }
+  render();
+}
+
+async function applyAirsharkAdvanced(): Promise<void> {
+  const advanced = state.airsharkAdvanced;
+  const result = await withAction('Airshark advanced settings applied', () => ConfigureAirsharkAdvanced({
+    rfFilter: advanced.rfFilter,
+    mixerPath: advanced.mixerPath,
+    ifFilter: advanced.ifFilter,
+    loFrequencyMHz: advanced.loFrequencyMHz,
+    frontendAttenuationDb: advanced.frontendAttenuationDb,
+    calibrationAttenuationDb: advanced.calibrationAttenuationDb,
+  }) as Promise<Snapshot>);
+  if (result) {
+    state.snapshot = result;
+    syncAirsharkAdvanced(result);
+    state.airsharkControl.band = result.status.airsharkBand || state.airsharkControl.band;
+    state.airsharkControl.attenuationDb = result.status.attenuationDb;
+    state.airsharkControl.calAttenuationDb = result.status.calAttenuationDb;
+  }
+  render();
+}
+
+function syncAirsharkAdvanced(snapshot: Snapshot): void {
+  if (!snapshot.status.airshark) return;
+  state.airsharkAdvanced.rfFilter = snapshot.status.rfSwitch.includes('2GHZ') ? 1 : 0;
+  state.airsharkAdvanced.mixerPath = snapshot.status.mixerSwitch.includes('BYPASS') ? 1 : 0;
+  state.airsharkAdvanced.ifFilter = snapshot.status.ifSwitch.includes('1_2GHZ') ? 1 : 0;
+  state.airsharkAdvanced.loFrequencyMHz = snapshot.status.loFrequencyMHz;
+  state.airsharkAdvanced.frontendAttenuationDb = snapshot.status.attenuationDb;
+  state.airsharkAdvanced.calibrationAttenuationDb = snapshot.status.calAttenuationDb;
+}
+
+async function runSelfTest(): Promise<void> {
+  if (!window.confirm('The GPIO self-test temporarily toggles RF switches and attenuation control lines. Continue?')) return;
+  const result = await withAction('Airshark GPIO self-test completed', () => RunGPIOSelfTest() as Promise<GPIOSelfTestResult>);
+  if (result) state.selfTest = result;
+  render();
+}
+
+async function selectFirmware(): Promise<void> {
+  if (state.busy) return;
+  try {
+    const firmware = await SelectFirmware() as FirmwareInfo;
+    if (!firmware.path) return;
+    state.firmware = firmware;
+    state.notice = `${firmware.board} firmware ${firmware.version} selected`;
+    state.noticeKind = 'success';
+    render();
+  } catch (error) {
+    state.notice = errorText(error);
+    state.noticeKind = 'error';
+    render();
+  }
+}
+
+async function flashFirmware(): Promise<void> {
+  const firmware = state.firmware;
+  if (!firmware || !window.confirm(`Flash ${firmware.board} firmware ${firmware.version}? The device will reboot when the update completes.`)) return;
+  const result = await withAction(`Firmware ${firmware.version} flashed; device is rebooting`, () => FlashFirmware(firmware.path));
+  if (!result) return;
+  state.snapshot = null;
+  state.selfTest = null;
+  state.firmware = null;
+  state.tab = 'status';
+  state.scanMessage = 'Firmware flashed. Wait for the device to reboot, then scan again.';
+  state.scanKind = 'success';
   render();
 }
 

@@ -144,10 +144,10 @@ func (c *Client) GetStatus() (*pb.GetStatusResponse, error) {
 
 // GpioSelfTest runs the firmware's control-GPIO diagnostic: the device drives
 // every board control pin low then high, reads the pad back each way, and
-// reports per-pin pass/fail with the stuck direction. Firmware >= 1.1.0. A
-// transport/refusal surfaces as *TransportError / *DeviceError as usual; a
-// returned response with AllPassed=false is a normal (non-error) result the
-// caller inspects.
+// reports per-pin pass/fail with the stuck direction. STRAPS firmware 1.1.1+
+// includes its attenuation bus pins. A transport/refusal surfaces as
+// *TransportError / *DeviceError as usual; a returned response with
+// AllPassed=false is a normal (non-error) result the caller inspects.
 func (c *Client) GpioSelfTest() (*pb.GpioSelfTestResponse, error) {
 	resp, err := c.send(&pb.Packet{MessageId: &pb.Packet_GpioSelfTestRequest{GpioSelfTestRequest: &pb.GpioSelfTestRequest{}}})
 	if err != nil {

@@ -142,6 +142,44 @@ type AirsharkRequest struct {
 	CalibrationEnabled bool   `json:"calibrationEnabled"`
 }
 
+// AirsharkAdvancedRequest controls the independently selectable STRAPS RF
+// frontend switch banks, PLL, and both digital attenuators.
+type AirsharkAdvancedRequest struct {
+	RFFilter                 int32 `json:"rfFilter"`
+	MixerPath                int32 `json:"mixerPath"`
+	IFFilter                 int32 `json:"ifFilter"`
+	LOFrequencyMHz           int32 `json:"loFrequencyMHz"`
+	FrontendAttenuationDB    int32 `json:"frontendAttenuationDb"`
+	CalibrationAttenuationDB int32 `json:"calibrationAttenuationDb"`
+}
+
+type GPIOSelfTestPin struct {
+	Pin        uint32 `json:"pin"`
+	Name       string `json:"name"`
+	Passed     bool   `json:"passed"`
+	Stuck      string `json:"stuck"`
+	MinDriveMA uint32 `json:"minDriveMa"`
+}
+
+type GPIOSelfTestResult struct {
+	AllPassed bool              `json:"allPassed"`
+	Pins      []GPIOSelfTestPin `json:"pins"`
+}
+
+type FirmwareInfo struct {
+	Path    string `json:"path"`
+	Board   string `json:"board"`
+	Version string `json:"version"`
+	BuildID string `json:"buildId"`
+	Size    uint32 `json:"size"`
+	CRC32   string `json:"crc32"`
+}
+
+type FirmwareUpdateResult struct {
+	Firmware  FirmwareInfo `json:"firmware"`
+	Rebooting bool         `json:"rebooting"`
+}
+
 // BlackCanyonRequest is the complete pending Black Canyon (firmware board
 // type "bc") state. Changes are written only when Apply is pressed.
 type BlackCanyonRequest struct {
@@ -272,6 +310,10 @@ type deviceClient interface {
 	SetCalEnabled(bool) error
 	SetCalSource(bool) error
 	SetRfBand(pb.RfBand) error
+	SetSwitches(pb.RfSwitchOption, pb.MixerSwitchOption, pb.IfSwitchOption) error
+	SetPllFrequency(int32) error
+	GpioSelfTest() (*pb.GpioSelfTestResponse, error)
+	UpdateFirmware(*client.FirmwareImage, func(uint32, uint32)) error
 }
 
 type session struct {
@@ -695,6 +737,117 @@ func (s *Service) ConfigureAirshark(request AirsharkRequest) (DeviceSnapshot, er
 		}
 	}
 	return s.refreshLocked()
+}
+
+// ConfigureAirsharkAdvanced applies explicit switch-bank and LO selections,
+// bypassing the customer band presets while retaining direct DSA control.
+func (s *Service) ConfigureAirsharkAdvanced(request AirsharkAdvancedRequest) (DeviceSnapshot, error) {
+	if request.RFFilter < int32(pb.RfSwitchOption_RF_SWITCH_OPTION_4GHZ_LPF) ||
+		request.RFFilter > int32(pb.RfSwitchOption_RF_SWITCH_OPTION_2GHZ_LPF) {
+		return DeviceSnapshot{}, fmt.Errorf("RF filter must be 4 GHz LPF or 2 GHz LPF")
+	}
+	if request.MixerPath < int32(pb.MixerSwitchOption_MIXER_SWITCH_OPTION_MIXER) ||
+		request.MixerPath > int32(pb.MixerSwitchOption_MIXER_SWITCH_OPTION_BYPASS) {
+		return DeviceSnapshot{}, fmt.Errorf("mixer path must be mixer or bypass")
+	}
+	if request.IFFilter < int32(pb.IfSwitchOption_IF_SWITCH_OPTION_900MHZ_LPF) ||
+		request.IFFilter > int32(pb.IfSwitchOption_IF_SWITCH_OPTION_1_2GHZ_BANDPASS) {
+		return DeviceSnapshot{}, fmt.Errorf("IF filter must be 900 MHz LPF or 1.2 GHz band-pass")
+	}
+	if request.LOFrequencyMHz < 0 || request.LOFrequencyMHz > 15000 {
+		return DeviceSnapshot{}, fmt.Errorf("LO frequency must be between 0 and 15000 MHz")
+	}
+	if request.FrontendAttenuationDB < 0 || request.FrontendAttenuationDB > 31 {
+		return DeviceSnapshot{}, fmt.Errorf("frontend attenuation must be between 0 and 31 dB")
+	}
+	if request.CalibrationAttenuationDB < 0 || request.CalibrationAttenuationDB > 31 {
+		return DeviceSnapshot{}, fmt.Errorf("calibration attenuation must be between 0 and 31 dB")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireAirsharkLocked(); err != nil {
+		return DeviceSnapshot{}, err
+	}
+	if err := s.active.client.SetSwitches(
+		pb.RfSwitchOption(request.RFFilter),
+		pb.MixerSwitchOption(request.MixerPath),
+		pb.IfSwitchOption(request.IFFilter),
+	); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set Airshark switch banks: %w", err)
+	}
+	if err := s.active.client.SetPllFrequency(request.LOFrequencyMHz); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set Airshark LO frequency: %w", err)
+	}
+	if err := s.active.client.SetAttenuation(request.FrontendAttenuationDB); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set Airshark frontend attenuation: %w", err)
+	}
+	if err := s.active.client.SetCalAttenuation(request.CalibrationAttenuationDB); err != nil {
+		return DeviceSnapshot{}, fmt.Errorf("set Airshark calibration attenuation: %w", err)
+	}
+	return s.refreshLocked()
+}
+
+// RunGPIOSelfTest exercises the Airshark control pins. Firmware 1.1.1 adds
+// the shared attenuator SCK and MOSI pins to the STRAPS test table.
+func (s *Service) RunGPIOSelfTest() (GPIOSelfTestResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.requireAirsharkLocked(); err != nil {
+		return GPIOSelfTestResult{}, err
+	}
+	response, err := s.active.client.GpioSelfTest()
+	if err != nil {
+		return GPIOSelfTestResult{}, fmt.Errorf("run Airshark GPIO self-test: %w", err)
+	}
+	result := GPIOSelfTestResult{AllPassed: response.GetAllPassed(), Pins: make([]GPIOSelfTestPin, 0, len(response.GetPins()))}
+	for _, pin := range response.GetPins() {
+		result.Pins = append(result.Pins, GPIOSelfTestPin{
+			Pin: pin.GetPin(), Name: pin.GetName(), Passed: pin.GetPassed(),
+			Stuck: strings.TrimPrefix(pin.GetStuck().String(), "GPIO_STUCK_STATE_"), MinDriveMA: pin.GetMinDriveMa(),
+		})
+	}
+	return result, nil
+}
+
+func InspectFirmware(path string) (FirmwareInfo, error) {
+	image, err := client.LoadFirmwareImage(strings.TrimSpace(path))
+	if err != nil {
+		return FirmwareInfo{}, err
+	}
+	return firmwareInfo(path, image), nil
+}
+
+func firmwareInfo(path string, image *client.FirmwareImage) FirmwareInfo {
+	return FirmwareInfo{
+		Path: path, Board: image.Board, Version: image.Version, BuildID: image.BuildID,
+		Size: image.Size(), CRC32: fmt.Sprintf("0x%08X", image.CRC32),
+	}
+}
+
+// FlashFirmware validates the OTA image against the connected board before
+// transferring it. A successful commit reboots the device and ends the session.
+func (s *Service) FlashFirmware(path string) (FirmwareUpdateResult, error) {
+	image, err := client.LoadFirmwareImage(strings.TrimSpace(path))
+	if err != nil {
+		return FirmwareUpdateResult{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil {
+		return FirmwareUpdateResult{}, fmt.Errorf("no device is connected")
+	}
+	board := s.active.status.GetBoardType()
+	if image.Board != board {
+		return FirmwareUpdateResult{}, fmt.Errorf("firmware is for %s, but connected device is %s", boardLabel(image.Board), boardLabel(board))
+	}
+	if err := s.active.client.UpdateFirmware(image, nil); err != nil {
+		return FirmwareUpdateResult{}, fmt.Errorf("flash firmware: %w", err)
+	}
+	info := firmwareInfo(path, image)
+	_ = s.active.client.Close()
+	s.active = nil
+	return FirmwareUpdateResult{Firmware: info, Rebooting: true}, nil
 }
 
 // ConfigureBlackCanyon applies the complete frontend state. Power-off is sent

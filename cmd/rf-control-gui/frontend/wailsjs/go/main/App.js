@@ -6,6 +6,10 @@ export function ConfigureAirshark(arg1) {
   return window['go']['main']['App']['ConfigureAirshark'](arg1);
 }
 
+export function ConfigureAirsharkAdvanced(arg1) {
+  return window['go']['main']['App']['ConfigureAirsharkAdvanced'](arg1);
+}
+
 export function ConfigureBlackCanyon(arg1) {
   return window['go']['main']['App']['ConfigureBlackCanyon'](arg1);
 }
@@ -34,6 +38,10 @@ export function Discover() {
   return window['go']['main']['App']['Discover']();
 }
 
+export function FlashFirmware(arg1) {
+  return window['go']['main']['App']['FlashFirmware'](arg1);
+}
+
 export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
 }
@@ -46,8 +54,16 @@ export function PreviewNetwork(arg1) {
   return window['go']['main']['App']['PreviewNetwork'](arg1);
 }
 
+export function RunGPIOSelfTest() {
+  return window['go']['main']['App']['RunGPIOSelfTest']();
+}
+
 export function SaveTuningProfile(arg1, arg2) {
   return window['go']['main']['App']['SaveTuningProfile'](arg1, arg2);
+}
+
+export function SelectFirmware() {
+  return window['go']['main']['App']['SelectFirmware']();
 }
 
 export function SetIPAddress(arg1) {

@@ -56,6 +56,32 @@ func (a *App) ConfigureAirshark(request controlgui.AirsharkRequest) (controlgui.
 	return a.service.ConfigureAirshark(request)
 }
 
+func (a *App) ConfigureAirsharkAdvanced(request controlgui.AirsharkAdvancedRequest) (controlgui.DeviceSnapshot, error) {
+	return a.service.ConfigureAirsharkAdvanced(request)
+}
+
+func (a *App) RunGPIOSelfTest() (controlgui.GPIOSelfTestResult, error) {
+	return a.service.RunGPIOSelfTest()
+}
+
+func (a *App) SelectFirmware() (controlgui.FirmwareInfo, error) {
+	if a.ctx == nil {
+		return controlgui.FirmwareInfo{}, fmt.Errorf("application is not ready")
+	}
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:   "Select Airshark OTA firmware",
+		Filters: []runtime.FileFilter{{DisplayName: "Ocupoint firmware (*.bin)", Pattern: "*.bin"}},
+	})
+	if err != nil || path == "" {
+		return controlgui.FirmwareInfo{}, err
+	}
+	return controlgui.InspectFirmware(path)
+}
+
+func (a *App) FlashFirmware(path string) (controlgui.FirmwareUpdateResult, error) {
+	return a.service.FlashFirmware(path)
+}
+
 func (a *App) ConfigureBlackCanyon(request controlgui.BlackCanyonRequest) (controlgui.DeviceSnapshot, error) {
 	return a.service.ConfigureBlackCanyon(request)
 }
