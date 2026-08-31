@@ -19,6 +19,8 @@ const (
 	BarracudaMinIFFrequencyMHz      int32  = 50
 	BarracudaMaxIFFrequencyMHz      int32  = 1500
 	BarracudaMaxAttenuationDB              = 31.75
+	barracudaLockTimeout                   = 2 * time.Second
+	barracudaLockPollInterval              = 50 * time.Millisecond
 )
 
 // BarracudaCWConfig is the small customer-facing configuration for a CW IF.
@@ -154,9 +156,9 @@ func (c *Client) RunEqualizedSweep(req *pb.RunEqualizedSweepRequest) (*pb.RunEqu
 	return got.RunEqualizedSweepResponse, nil
 }
 
-// ConfigureBarracudaCW safely applies the complete customer CW plan. It verifies
-// the board, mutes the DSA during reconfiguration, derives the internal RF plan
-// from the requested IF, then applies the requested attenuation.
+// ConfigureBarracudaCW applies the complete customer CW plan. During prototype
+// development it sets the DSA to 0 dB during reconfiguration so RF remains
+// observable, then applies the requested attenuation after both PLLs lock.
 func (c *Client) ConfigureBarracudaCW(cfg BarracudaCWConfig) (*BarracudaConfiguration, error) {
 	quarterDB, err := validateBarracudaAttenuation(cfg.AttenuationDB)
 	if err != nil {
@@ -171,15 +173,15 @@ func (c *Client) ConfigureBarracudaCW(cfg BarracudaCWConfig) (*BarracudaConfigur
 	if err := c.SetPllFrequency(barracudaRFFrequencyMHz(cfg.IFFrequencyMHz)); err != nil {
 		return nil, fmt.Errorf("set CW IF frequency: %w", err)
 	}
-	status, err := c.GetStatus()
+	status, err := c.waitForBarracudaSynthesizerLocks(barracudaLockTimeout, barracudaLockPollInterval)
 	if err != nil {
 		return nil, fmt.Errorf("verify CW configuration: %w", err)
 	}
-	if err := verifyBarracudaLO(status); err != nil {
+	if err := barracudaSynthesizerLockError(status); err != nil {
 		return nil, err
 	}
-	if !status.GetPllLocked() {
-		return nil, &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: "signal generator did not lock; output remains muted"}
+	if err := verifyBarracudaLO(status); err != nil {
+		return nil, err
 	}
 	if err := c.SetDsaAttenuation(quarterDB); err != nil {
 		return nil, fmt.Errorf("set attenuation: %w", err)
@@ -216,19 +218,22 @@ func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaCo
 	if err := c.prepareBarracudaCustomerPlan(cfg.ExternalClock); err != nil {
 		return nil, err
 	}
-	locked, err := c.SetChirp(
+	_, err = c.SetChirp(
 		barracudaRFFrequencyMHz(cfg.StartIFMHz), cfg.StopIFMHz-cfg.StartIFMHz, rampTimeUs,
 		pb.ChirpMode_CHIRP_MODE_SAWTOOTH_CONTINUOUS, true,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("set sweep: %w", err)
 	}
-	if !locked {
-		return nil, &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: "signal generator did not lock; output remains muted"}
-	}
-	status, err := c.GetStatus()
+	// SetChirp's lock bit is sampled by the firmware immediately after it
+	// programs the ADF4159. Poll live status instead so its normal acquisition
+	// delay does not look like a failure.
+	status, err := c.waitForBarracudaSynthesizerLocks(barracudaLockTimeout, barracudaLockPollInterval)
 	if err != nil {
 		return nil, fmt.Errorf("verify sweep configuration: %w", err)
+	}
+	if err := barracudaSynthesizerLockError(status); err != nil {
+		return nil, err
 	}
 	if err := verifyBarracudaLO(status); err != nil {
 		return nil, err
@@ -240,8 +245,58 @@ func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaCo
 		Mode: "sweep", StartIFMHz: cfg.StartIFMHz, StopIFMHz: cfg.StopIFMHz, SweepTime: cfg.SweepTime,
 		AttenuationDB:    cfg.AttenuationDB,
 		NominalOutputDBm: BarracudaNominalOutputDBm - cfg.AttenuationDB,
-		ExternalClock:    cfg.ExternalClock, SignalLocked: locked,
+		ExternalClock:    cfg.ExternalClock, SignalLocked: status.GetPllLocked(),
 	}, nil
+}
+
+// waitForBarracudaSynthesizerLocks polls the independent ADF4159 and LMX2595
+// lock indications until both assert or the bounded acquisition period
+// expires. Prototype mode leaves the DSA at 0 dB during this wait; the caller
+// applies the requested attenuation after the returned status is verified.
+func (c *Client) waitForBarracudaSynthesizerLocks(timeout, pollInterval time.Duration) (*pb.GetStatusResponse, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		status, err := c.GetStatus()
+		if err != nil {
+			return nil, err
+		}
+		details := status.GetBarracuda()
+		// Missing diagnostics are handled immediately by verifyBarracudaLO; do
+		// not turn an unsupported-firmware error into a misleading lock timeout.
+		locksReady := details == nil || (status.GetPllLocked() && details.GetLmxLocked())
+		if locksReady || !time.Now().Before(deadline) {
+			return status, nil
+		}
+		delay := pollInterval
+		if remaining := time.Until(deadline); delay > remaining {
+			delay = remaining
+		}
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+	}
+}
+
+func barracudaSynthesizerLockError(status *pb.GetStatusResponse) error {
+	details := status.GetBarracuda()
+	if details == nil {
+		return nil
+	}
+	adfLocked := status.GetPllLocked()
+	lmxLocked := details.GetLmxLocked()
+	if adfLocked && lmxLocked {
+		return nil
+	}
+	detail := ""
+	switch {
+	case !adfLocked && !lmxLocked:
+		detail = "ADF4159 and LMX2595 did not lock before timeout; output remains at 0 dB attenuation (prototype mode)"
+	case !adfLocked:
+		detail = "ADF4159 did not lock before timeout; output remains at 0 dB attenuation (prototype mode)"
+	default:
+		detail = "LMX2595 did not lock before timeout; output remains at 0 dB attenuation (prototype mode)"
+	}
+	return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: detail}
 }
 
 func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
@@ -253,9 +308,11 @@ func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_UNSUPPORTED,
 			Detail: fmt.Sprintf("customer CW/sweep control requires a Barracuda device (got %q)", status.GetBoardType())}
 	}
-	// Mute first. Any later failure leaves the RF path at maximum attenuation.
-	if err := c.SetDsaAttenuation(127); err != nil {
-		return fmt.Errorf("mute output before reconfiguration: %w", err)
+	// Prototype behavior: remove attenuation before retuning so RF remains
+	// observable during lock acquisition and after a failed Apply. Production
+	// safety behavior should restore maximum attenuation here.
+	if err := c.SetDsaAttenuation(0); err != nil {
+		return fmt.Errorf("remove attenuation before reconfiguration: %w", err)
 	}
 	clock, err := c.SetBarracudaClockSource(externalClock)
 	if err != nil {
@@ -263,12 +320,12 @@ func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
 	}
 	if clock.GetExternal() != externalClock {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
-			Detail: "clock-source readback did not match the requested source; output remains muted"}
+			Detail: "clock-source readback did not match the requested source; output remains at 0 dB attenuation (prototype mode)"}
 	}
 	if externalClock && (!clock.GetReferenceValid() || !clock.GetReferenceSelected() ||
 		!clock.GetDpllFrequencyLocked() || !clock.GetDpllPhaseLocked()) {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
-			Detail: "external reference was selected but is not valid and fully locked; output remains muted"}
+			Detail: "external reference was selected but is not valid and fully locked; output remains at 0 dB attenuation (prototype mode)"}
 	}
 	if err := c.SetLoFrequency(BarracudaFixedLOMHz); err != nil {
 		return fmt.Errorf("configure internal frequency plan: %w", err)
@@ -285,16 +342,16 @@ func verifyBarracudaLO(status *pb.GetStatusResponse) error {
 	details := status.GetBarracuda()
 	if details == nil {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_UNSUPPORTED,
-			Detail: "firmware does not provide internal frequency verification; output remains muted"}
+			Detail: "firmware does not provide internal frequency verification; output remains at 0 dB attenuation (prototype mode)"}
 	}
 	const expectedHz = uint64(BarracudaFixedLOMHz) * 1_000_000
 	if details.GetLmxRequestedFrequencyHz() != expectedHz || !details.GetLmxLocked() {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
-			Detail: "internal frequency plan could not be verified; output remains muted"}
+			Detail: "internal frequency plan could not be verified; output remains at 0 dB attenuation (prototype mode)"}
 	}
 	if details.GetLmxOutputPowerCode() != BarracudaCalibratedLMXPowerCode {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
-			Detail: "internal output power is not at the calibrated customer setting; output remains muted"}
+			Detail: "internal output power is not at the calibrated customer setting; output remains at 0 dB attenuation (prototype mode)"}
 	}
 	return nil
 }

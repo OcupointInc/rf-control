@@ -41,6 +41,21 @@ On macOS, extract the downloaded ZIP and open **Ocupoint RF Control.app**. If
 Gatekeeper blocks the unsigned download the first time, right-click the app,
 select **Open**, then confirm.
 
+### Preview Barracuda without hardware
+
+The unified GUI download includes a loopback Barracuda simulator. Start it in
+one terminal, leave it running, then open a second copy normally:
+
+```bash
+./rf-control-gui-linux-amd64 mock-barracuda
+./rf-control-gui-linux-amd64
+```
+
+On Windows, run `rf-control-windows-amd64.exe mock-barracuda` from PowerShell,
+then double-click the same executable. In the GUI, use **Connect directly** with
+address `127.0.0.1` and port `5000`. The simulated device supports Barracuda CW,
+sweep, attenuation, clock, RF controls, and separate ADF4159/LMX2595 lock status.
+
 ## 2. Connect over USB-C or Ethernet
 
 1. Power on the hardware.
@@ -71,6 +86,12 @@ Controls can include modes, frequencies, output levels, clock sources,
 switches, or other settings appropriate to the connected system. Where a
 setting is pending, changing it in the GUI does not affect the hardware until
 **Apply** is selected.
+
+For prototype Barracuda systems, Apply holds the DSA at 0 dB attenuation while
+waiting up to two seconds for both the ADF4159 and LMX2595 locks. The requested
+attenuation is applied only after both locks are confirmed. If either lock
+fails, the GUI identifies the failed synthesizer and the output remains at 0 dB
+attenuation (nominal maximum output).
 
 ## 4. Set the Ethernet address
 

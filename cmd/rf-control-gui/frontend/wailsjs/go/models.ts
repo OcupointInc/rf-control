@@ -119,6 +119,8 @@ export namespace gui {
 	    referenceLocked: boolean;
 	    signalLockApplicable: boolean;
 	    signalLocked: boolean;
+	    lmx2595LockApplicable: boolean;
+	    lmx2595Locked: boolean;
 	    attenuationDb: number;
 	    maximumAttenuation: boolean;
 	    rfEnabled: boolean;
@@ -159,6 +161,8 @@ export namespace gui {
 	        this.referenceLocked = source["referenceLocked"];
 	        this.signalLockApplicable = source["signalLockApplicable"];
 	        this.signalLocked = source["signalLocked"];
+	        this.lmx2595LockApplicable = source["lmx2595LockApplicable"];
+	        this.lmx2595Locked = source["lmx2595Locked"];
 	        this.attenuationDb = source["attenuationDb"];
 	        this.maximumAttenuation = source["maximumAttenuation"];
 	        this.rfEnabled = source["rfEnabled"];

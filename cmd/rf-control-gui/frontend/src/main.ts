@@ -61,6 +61,8 @@ type DeviceStatus = {
   referenceLocked: boolean;
   signalLockApplicable: boolean;
   signalLocked: boolean;
+  lmx2595LockApplicable: boolean;
+  lmx2595Locked: boolean;
   attenuationDb: number;
   maximumAttenuation: boolean;
   rfEnabled: boolean;
@@ -206,7 +208,8 @@ const statusStrip = (status: DeviceStatus): string => `
     <span class="chip good"><i></i>Connected</span>
     ${status.barracuda ? `<span class="chip ${status.rfEnabled ? 'good' : 'bad'}"><i></i>RF: ${status.rfEnabled ? 'On' : 'Off'}</span>` : ''}
     ${status.whalepod || status.airshark || status.blackCanyon ? `<span class="chip ${status.channelsEnabled ? 'good' : 'bad'}"><i></i>Frontends: ${status.channelsEnabled ? 'On' : 'Off'}</span>` : ''}
-    ${lockChip('Signal', status.signalLockApplicable, status.signalLocked)}
+    ${lockChip('ADF4159', status.signalLockApplicable, status.signalLocked)}
+    ${lockChip('LMX2595', status.lmx2595LockApplicable, status.lmx2595Locked)}
     ${lockChip('External reference', status.referenceLockApplicable, status.referenceLocked)}
     ${status.temperatureAvailable ? `<span class="chip neutral">${status.temperatureC.toFixed(1)} °C${status.temperatureBootSample ? ' boot sample' : ''}</span>` : ''}
   </div>`;
@@ -311,7 +314,7 @@ function renderBarracudaControl(snapshot: Snapshot): string {
             </div>`}
           <div class="field-row output-settings">
             <div class="field"><label for="output-power">Output power</label><div class="input-unit"><input id="output-power" type="number" min="-56" max="-25" step="0.25" value="${control.outputPowerDbm}" required><span>dBm</span></div><small>−25 to −56 dBm in 0.25 dB steps; nominal −25 dBm at maximum output.</small></div>
-            <fieldset class="field"><legend>Clock source</legend><div class="radio-row"><label><input type="radio" name="clock" value="internal" ${control.clock === 'internal' ? 'checked' : ''}>Internal</label><label><input type="radio" name="clock" value="external" ${control.clock === 'external' ? 'checked' : ''}>External reference</label></div><small>External mode must lock before RF is enabled.</small></fieldset>
+            <fieldset class="field"><legend>Clock source</legend><div class="radio-row"><label><input type="radio" name="clock" value="internal" ${control.clock === 'internal' ? 'checked' : ''}>Internal</label><label><input type="radio" name="clock" value="external" ${control.clock === 'external' ? 'checked' : ''}>External reference</label></div><small>Prototype mode uses 0 dB attenuation during lock acquisition; external reference must still lock for Apply to succeed.</small></fieldset>
           </div>
           <div class="form-actions"><button class="primary large" type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Applying…' : 'Apply'}</button><div class="profile-actions"><button class="secondary" type="button" id="load-tuning" ${state.busy ? 'disabled' : ''}>Load</button><button class="secondary export-profile" type="button" id="export-tuning" ${state.busy ? 'disabled' : ''}>Export</button></div><small>Export saves every setting currently shown as CLI-ready JSON. Loading a profile does not tune hardware until Apply.</small></div>
         </form>
@@ -327,7 +330,8 @@ function renderBarracudaFacts(status: DeviceStatus): string {
     ${status.sweepTime ? `<div><dt>Sweep time</dt><dd>${escapeHTML(status.sweepTime)}</dd></div>` : ''}
     <div><dt>Clock</dt><dd>${escapeHTML(status.clock || 'internal')}</dd></div>
     <div><dt>Nominal output</dt><dd>${status.outputEstimateAvailable ? `${status.nominalOutputDbm.toFixed(2)} dBm` : 'Unavailable'}</dd></div>
-    <div><dt>Signal lock</dt><dd class="${status.signalLocked ? 'text-good' : 'text-bad'}">${status.signalLocked ? 'Locked' : 'Not locked'}</dd></div>
+    <div><dt>ADF4159 lock</dt><dd class="${status.signalLocked ? 'text-good' : 'text-bad'}">${status.signalLocked ? 'Locked' : 'Not locked'}</dd></div>
+    ${status.lmx2595LockApplicable ? `<div><dt>LMX2595 lock</dt><dd class="${status.lmx2595Locked ? 'text-good' : 'text-bad'}">${status.lmx2595Locked ? 'Locked' : 'Not locked'}</dd></div>` : ''}
     ${status.referenceLockApplicable ? `<div><dt>Reference lock</dt><dd class="${status.referenceLocked ? 'text-good' : 'text-bad'}">${status.referenceLocked ? 'Locked' : 'Not locked'}</dd></div>` : ''}
   </dl>`;
 }

@@ -77,6 +77,8 @@ type DeviceStatus struct {
 	ReferenceLocked         bool    `json:"referenceLocked"`
 	SignalLockApplicable    bool    `json:"signalLockApplicable"`
 	SignalLocked            bool    `json:"signalLocked"`
+	LMX2595LockApplicable   bool    `json:"lmx2595LockApplicable"`
+	LMX2595Locked           bool    `json:"lmx2595Locked"`
 	AttenuationDB           float64 `json:"attenuationDb"`
 	MaximumAttenuation      bool    `json:"maximumAttenuation"`
 	RFEnabled               bool    `json:"rfEnabled"`
@@ -331,7 +333,7 @@ type session struct {
 // Service owns the selected-device session. Its mutex is intentionally held
 // across each request because the firmware and USB transport accept only one
 // request at a time; this also prevents status polling from interleaving with a
-// mute-first RF configuration transaction.
+// RF configuration transaction.
 type Service struct {
 	mu               sync.Mutex
 	active           *session
@@ -1130,6 +1132,8 @@ func statusFromResponse(current *session) DeviceStatus {
 	out.SignalLockApplicable = true
 	out.SignalLocked = status.GetPllLocked()
 	details := status.GetBarracuda()
+	out.LMX2595LockApplicable = details != nil
+	out.LMX2595Locked = details != nil && details.GetLmxLocked()
 	out.RFEnabled = details != nil && details.GetLmxRequestedFrequencyHz() != 0
 	customerPlan := details != nil &&
 		details.GetLmxRequestedFrequencyHz() == uint64(client.BarracudaFixedLOMHz)*1_000_000 &&

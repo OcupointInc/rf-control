@@ -74,8 +74,8 @@ func TestConfigureBarracudaCWSequence(t *testing.T) {
 			t.Errorf("request %d = %T, want %T", i, tx.sent[i].MessageId, want)
 		}
 	}
-	if got := tx.sent[1].GetSetDsaAttenuationRequest().GetQuarterDb(); got != 127 {
-		t.Errorf("mute attenuation = %d quarter-dB, want 127", got)
+	if got := tx.sent[1].GetSetDsaAttenuationRequest().GetQuarterDb(); got != 0 {
+		t.Errorf("prototype acquisition attenuation = %d quarter-dB, want 0", got)
 	}
 	if got := tx.sent[3].GetSetLoFrequencyRequest().GetFrequencyMhz(); got != BarracudaFixedLOMHz {
 		t.Errorf("LO = %d MHz, want %d", got, BarracudaFixedLOMHz)
@@ -105,7 +105,9 @@ func TestConfigureBarracudaSweepSequence(t *testing.T) {
 		}}},
 		{MessageId: &pb.Packet_SetLoFrequencyResponse{SetLoFrequencyResponse: &pb.SetLoFrequencyResponse{}}},
 		{MessageId: &pb.Packet_SetLmxOutputPowerResponse{SetLmxOutputPowerResponse: &pb.SetLmxOutputPowerResponse{}}},
-		{MessageId: &pb.Packet_SetChirpResponse{SetChirpResponse: &pb.SetChirpResponse{Locked: true}}},
+		// The immediate chirp response may precede lock acquisition. The client
+		// must rely on live status polling instead of failing this response.
+		{MessageId: &pb.Packet_SetChirpResponse{SetChirpResponse: &pb.SetChirpResponse{Locked: false}}},
 		barracudaStatus(true),
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
 	}}
@@ -133,7 +135,96 @@ func TestConfigureBarracudaSweepSequence(t *testing.T) {
 	}
 }
 
-func TestConfigureBarracudaExternalClockFailureLeavesMuted(t *testing.T) {
+func TestConfigureBarracudaCWRetriesDelayedLock(t *testing.T) {
+	tx := &scriptedTransport{replies: []*pb.Packet{
+		barracudaStatus(false),
+		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
+		{MessageId: &pb.Packet_SetClockSourceResponse{SetClockSourceResponse: &pb.SetClockSourceResponse{External: false}}},
+		{MessageId: &pb.Packet_SetLoFrequencyResponse{SetLoFrequencyResponse: &pb.SetLoFrequencyResponse{}}},
+		{MessageId: &pb.Packet_SetLmxOutputPowerResponse{SetLmxOutputPowerResponse: &pb.SetLmxOutputPowerResponse{}}},
+		{MessageId: &pb.Packet_SetPllFrequencyResponse{SetPllFrequencyResponse: &pb.SetPllFrequencyResponse{}}},
+		barracudaStatus(false),
+		barracudaStatus(true),
+		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
+	}}
+	result, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{
+		IFFrequencyMHz: 400, AttenuationDB: 6.25,
+	})
+	if err != nil {
+		t.Fatalf("ConfigureBarracudaCW: %v", err)
+	}
+	if len(tx.sent) != 9 {
+		t.Fatalf("sent %d requests, want 9 including two lock polls", len(tx.sent))
+	}
+	if got := tx.sent[8].GetSetDsaAttenuationRequest().GetQuarterDb(); got != 25 {
+		t.Errorf("final attenuation = %d quarter-dB, want 25", got)
+	}
+	if !result.SignalLocked {
+		t.Errorf("result = %+v, want locked", result)
+	}
+}
+
+func TestWaitForBarracudaSynthesizerLocksTimeout(t *testing.T) {
+	tx := &scriptedTransport{replies: []*pb.Packet{barracudaStatus(false)}}
+	status, err := New(tx).waitForBarracudaSynthesizerLocks(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adfLocked := status.GetPllLocked()
+	lmxLocked := status.GetBarracuda().GetLmxLocked()
+	if adfLocked || !lmxLocked {
+		t.Fatalf("locks = ADF4159:%v LMX2595:%v", adfLocked, lmxLocked)
+	}
+	if len(tx.sent) != 1 {
+		t.Fatalf("sent %d status requests, want 1", len(tx.sent))
+	}
+}
+
+func TestWaitForBarracudaSynthesizerLocksRetriesDelayedLMX(t *testing.T) {
+	first := barracudaStatus(true)
+	first.GetGetStatusResponse().GetBarracuda().LmxLocked = false
+	tx := &scriptedTransport{replies: []*pb.Packet{first, barracudaStatus(true)}}
+	status, err := New(tx).waitForBarracudaSynthesizerLocks(time.Second, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adfLocked := status.GetPllLocked()
+	lmxLocked := status.GetBarracuda().GetLmxLocked()
+	if !adfLocked || !lmxLocked {
+		t.Fatalf("locks = ADF4159:%v LMX2595:%v", adfLocked, lmxLocked)
+	}
+	if len(tx.sent) != 2 {
+		t.Fatalf("sent %d status requests, want 2", len(tx.sent))
+	}
+}
+
+func TestBarracudaSynthesizerLockErrorNamesFailedDevice(t *testing.T) {
+	tests := []struct {
+		name      string
+		adfLocked bool
+		lmxLocked bool
+		want      string
+	}{
+		{"ADF4159", false, true, "ADF4159"},
+		{"LMX2595", true, false, "LMX2595"},
+		{"both", false, false, "ADF4159 and LMX2595"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			status := barracudaStatus(test.adfLocked).GetGetStatusResponse()
+			status.GetBarracuda().LmxLocked = test.lmxLocked
+			err := barracudaSynthesizerLockError(status)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want device %q", err, test.want)
+			}
+			if !strings.Contains(err.Error(), "0 dB attenuation") {
+				t.Fatalf("error = %v, want prototype attenuation state", err)
+			}
+		})
+	}
+}
+
+func TestConfigureBarracudaExternalClockFailureLeavesUnattenuated(t *testing.T) {
 	tx := &scriptedTransport{replies: []*pb.Packet{
 		barracudaStatus(false),
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
@@ -148,12 +239,12 @@ func TestConfigureBarracudaExternalClockFailureLeavesMuted(t *testing.T) {
 	if len(tx.sent) != 3 {
 		t.Fatalf("sent %d requests after clock failure, want 3", len(tx.sent))
 	}
-	if got := tx.sent[1].GetSetDsaAttenuationRequest().GetQuarterDb(); got != 127 {
-		t.Errorf("failure path did not mute first: %d", got)
+	if got := tx.sent[1].GetSetDsaAttenuationRequest().GetQuarterDb(); got != 0 {
+		t.Errorf("failure path did not remain at 0 dB attenuation: %d", got)
 	}
 }
 
-func TestConfigureBarracudaPowerMismatchLeavesMuted(t *testing.T) {
+func TestConfigureBarracudaPowerMismatchLeavesUnattenuated(t *testing.T) {
 	badStatus := barracudaStatus(true)
 	badStatus.GetGetStatusResponse().GetBarracuda().LmxOutputPowerCode = 49
 	tx := &scriptedTransport{replies: []*pb.Packet{
@@ -172,8 +263,8 @@ func TestConfigureBarracudaPowerMismatchLeavesMuted(t *testing.T) {
 	if len(tx.sent) != 7 {
 		t.Fatalf("sent %d requests after verification failure, want 7", len(tx.sent))
 	}
-	if got := tx.sent[1].GetSetDsaAttenuationRequest().GetQuarterDb(); got != 127 {
-		t.Errorf("failure path did not mute first: %d", got)
+	if got := tx.sent[1].GetSetDsaAttenuationRequest().GetQuarterDb(); got != 0 {
+		t.Errorf("failure path did not remain at 0 dB attenuation: %d", got)
 	}
 }
 

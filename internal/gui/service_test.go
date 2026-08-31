@@ -188,6 +188,7 @@ func barracudaFake() *fakeDevice {
 			BoardType: "barracuda", PllLocked: true, AttenuationDb: 0, LoFrequencyMhz: 12345,
 			Barracuda: &pb.BarracudaDiagnostics{
 				LmxRequestedFrequencyHz: uint64(client.BarracudaFixedLOMHz) * 1_000_000,
+				LmxLocked:               true,
 				LmxOutputPowerCode:      client.BarracudaCalibratedLMXPowerCode,
 				AdfState:                &pb.Adf4159State{FrequencyMhz: client.BarracudaFixedLOMHz + 400},
 			},
@@ -394,6 +395,49 @@ func TestWhalepodGUIServiceAgainstMockFirmware(t *testing.T) {
 	if !snapshot.Status.ChannelsEnabled || !snapshot.Status.CalibrationEnabled || snapshot.Status.CalSourceInternal ||
 		snapshot.Status.AttenuationDB != 19 || snapshot.Status.CalAttenuationDB != 11 {
 		t.Fatalf("wire readback = %+v", snapshot.Status)
+	}
+}
+
+func TestBarracudaGUIServiceAgainstMockFirmware(t *testing.T) {
+	firmware, err := mockfirmware.ListenBarracuda("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = firmware.Serve() }()
+	t.Cleanup(func() { _ = firmware.Close() })
+	port := firmware.Addr().(*net.TCPAddr).Port
+	service := NewService()
+	service.listUSB = func() ([]string, error) { return nil, nil }
+	service.discoverEthernet = func(time.Duration) ([]*pb.DiscoveryResponse, error) { return nil, nil }
+
+	snapshot, err := service.Connect(Endpoint{Kind: "ethernet", Address: "127.0.0.1", Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status.BoardLabel != "Barracuda" || snapshot.Network.Firmware != "mock-1.0.0" {
+		t.Fatalf("mock firmware identity = %+v", snapshot)
+	}
+	if !snapshot.Status.SignalLocked || !snapshot.Status.LMX2595Locked {
+		t.Fatalf("initial mock locks = %+v", snapshot.Status)
+	}
+
+	snapshot, err = service.ConfigureCW(CWRequest{
+		FrequencyMHz: 900, Attenuation: 6.25, Clock: "external", RFEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{
+		"attenuation", "clock", "lmx-frequency", "lmx-power", "adf-cw", "attenuation",
+		"lmx-frequency", "lmx-power",
+	}
+	if calls := firmware.Calls(); fmt.Sprint(calls) != fmt.Sprint(wantCalls) {
+		t.Fatalf("wire requests = %v, want %v", calls, wantCalls)
+	}
+	status := snapshot.Status
+	if status.Mode != "cw" || status.IFFrequencyMHz != 900 || status.AttenuationDB != 6.25 ||
+		!status.SignalLocked || !status.LMX2595Locked || !status.ReferenceLocked || !status.RFEnabled {
+		t.Fatalf("wire readback = %+v", status)
 	}
 }
 
@@ -892,8 +936,26 @@ func TestBarracudaCWUsesCustomerPlanAndHidesEngineeringState(t *testing.T) {
 	}
 	status := snapshot.Status
 	if status.Mode != "cw" || status.IFFrequencyMHz != 900 || status.AttenuationDB != 6.25 ||
-		status.NominalOutputDBm != -31.25 || !status.SignalLocked || !status.ReferenceLocked {
+		status.NominalOutputDBm != -31.25 || !status.SignalLocked || !status.LMX2595Locked || !status.ReferenceLocked {
 		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestBarracudaStatusSeparatesADF4159AndLMX2595Locks(t *testing.T) {
+	fake := barracudaFake()
+	fake.status.PllLocked = false
+	fake.status.Barracuda.LmxLocked = true
+	service := serviceWithFake(fake)
+	snapshot, err := service.Connect(Endpoint{Kind: "usb", Address: "COM4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := snapshot.Status
+	if !status.SignalLockApplicable || status.SignalLocked {
+		t.Fatalf("ADF4159 lock status = applicable:%v locked:%v", status.SignalLockApplicable, status.SignalLocked)
+	}
+	if !status.LMX2595LockApplicable || !status.LMX2595Locked {
+		t.Fatalf("LMX2595 lock status = applicable:%v locked:%v", status.LMX2595LockApplicable, status.LMX2595Locked)
 	}
 }
 

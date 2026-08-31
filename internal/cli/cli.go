@@ -2015,6 +2015,29 @@ func cmdMockWhalepod(args []string) error {
 	return server.Serve()
 }
 
+// cmdMockBarracuda runs the Barracuda simulator used to preview and exercise
+// the GUI without a physical RF system.
+func cmdMockBarracuda(args []string) error {
+	fs := flag.NewFlagSet("mock-barracuda", flag.ExitOnError)
+	listen := fs.String("listen", "127.0.0.1:5000", "Loopback TCP address for the mock control server")
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		return usagef("usage: mock-barracuda [--listen 127.0.0.1:5000]")
+	}
+	host, _, err := net.SplitHostPort(*listen)
+	if err != nil || (host != "127.0.0.1" && host != "localhost") {
+		return usagef("mock-barracuda must listen on loopback as host:port")
+	}
+	server, err := mockfirmware.ListenBarracuda(*listen)
+	if err != nil {
+		return err
+	}
+	defer server.Close()
+	fmt.Printf("Barracuda mock firmware listening at %s\n", server.Addr())
+	fmt.Println("Connect the GUI directly to 127.0.0.1. Press Ctrl+C to stop.")
+	return server.Serve()
+}
+
 // cmdMockAirshark runs the Straps-compatible Airshark simulator used for GUI
 // development and end-to-end testing.
 func cmdMockAirshark(args []string) error {
@@ -2535,6 +2558,8 @@ Commands:
                          the eight channels, or "off" to isolate all of them.
   mock-whalepod [--listen 127.0.0.1:5000]
                          Run loopback mock firmware for GUI development/testing.
+  mock-barracuda [--listen 127.0.0.1:5000]
+                         Run loopback Barracuda firmware for GUI development/testing.
   mock-airshark [--listen 127.0.0.1:5000]
                          Run loopback Airshark firmware for GUI development/testing.
   mock-black-canyon [--listen 127.0.0.1:5000]
@@ -2682,6 +2707,8 @@ func Main() {
 		err = cmdFlash(rest)
 	case "mock-whalepod":
 		err = cmdMockWhalepod(rest)
+	case "mock-barracuda":
+		err = cmdMockBarracuda(rest)
 	case "mock-airshark":
 		err = cmdMockAirshark(rest)
 	case "mock-black-canyon":
