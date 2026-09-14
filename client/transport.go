@@ -1,10 +1,12 @@
 package client
 
 import (
+	"bufio"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"sort"
@@ -19,11 +21,12 @@ import (
 )
 
 const (
-	usbFrameMagic0 = 0xAA
-	usbFrameMagic1 = 0x55
-	usbReadTimeout = 2 * time.Second
-	tcpDialTimeout = 5 * time.Second
-	tcpReadTimeout = 5 * time.Second
+	usbFrameMagic0     = 0xAA
+	usbFrameMagic1     = 0x55
+	usbReadTimeout     = 2 * time.Second
+	tcpDialTimeout     = 5 * time.Second
+	tcpReadTimeout     = 5 * time.Second
+	tcpMaxResponseSize = 65535
 
 	// The device's control port only has two listening sockets, and each
 	// takes several of the device's main-loop iterations to cycle back to
@@ -128,14 +131,42 @@ func (t *TCPTransport) sendOnce(p *pb.Packet) (*pb.Packet, error) {
 		return nil, err
 	}
 
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
+	return readTCPResponse(conn)
+}
+
+// TCP carries a raw Packet containing one length-delimited oneof message.
+// Use that field's protobuf length to read exactly one complete response:
+// TCP read boundaries are unrelated to protobuf message boundaries, and the
+// firmware need not close the connection immediately after replying.
+func readTCPResponse(conn io.Reader) (*pb.Packet, error) {
+	reader := bufio.NewReader(conn)
+	tag, err := binary.ReadUvarint(reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read TCP response tag: %w", err)
+	}
+	if tag&7 != 2 || tag>>3 == 0 || tag>>3 > (1<<29)-1 {
+		return nil, fmt.Errorf("invalid TCP response tag: %d", tag)
+	}
+	length, err := binary.ReadUvarint(reader)
+	if err != nil {
+		return nil, fmt.Errorf("read TCP response length: %w", err)
+	}
+	header := binary.AppendUvarint(nil, tag)
+	header = binary.AppendUvarint(header, length)
+	if length > uint64(tcpMaxResponseSize-len(header)) {
+		return nil, fmt.Errorf("TCP response exceeds %d bytes", tcpMaxResponseSize)
+	}
+	payload := make([]byte, len(header)+int(length))
+	copy(payload, header)
+	if _, err := io.ReadFull(reader, payload[len(header):]); err != nil {
+		return nil, fmt.Errorf("read TCP response payload: %w", err)
 	}
 	resp := &pb.Packet{}
-	if err := proto.Unmarshal(buf[:n], resp); err != nil {
+	if err := proto.Unmarshal(payload, resp); err != nil {
 		return nil, err
+	}
+	if resp.MessageId == nil {
+		return nil, errors.New("TCP response contains no recognized message")
 	}
 	return resp, nil
 }

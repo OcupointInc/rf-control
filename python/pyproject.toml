@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocupoint-rf-control"
+version = "0.1.0"
+description = "Native Python control of Ocupoint RF devices over Ethernet and USB"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = ["protobuf>=4.25,<8"]
+
+[project.optional-dependencies]
+usb = ["pyserial>=3.5,<4"]
+dev = ["grpcio-tools==1.62.3", "build>=1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rf_control = ["py.typed"]

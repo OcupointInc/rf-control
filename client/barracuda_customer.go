@@ -194,8 +194,9 @@ func (c *Client) ConfigureBarracudaCW(cfg BarracudaCWConfig) (*BarracudaConfigur
 	}, nil
 }
 
-// ConfigureBarracudaSweep safely applies a continuous sawtooth sweep using the
-// customer operating plan. Only IF start, IF stop, duration, attenuation, and
+// ConfigureBarracudaSweep applies a continuous sawtooth sweep using the
+// customer operating plan, with the same acquisition attenuation as CW.
+// Only IF start, IF stop, duration, attenuation, and
 // clock source are configurable; the RF synthesizer plan remains internal.
 func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaConfiguration, error) {
 	quarterDB, err := validateBarracudaAttenuation(cfg.AttenuationDB)
@@ -226,8 +227,8 @@ func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaCo
 		return nil, fmt.Errorf("set sweep: %w", err)
 	}
 	// SetChirp's lock bit is sampled by the firmware immediately after it
-	// programs the ADF4159. Poll live status instead so its normal acquisition
-	// delay does not look like a failure.
+	// programs the ADF4159. Poll live status instead so a normal acquisition
+	// delay does not make a valid configuration look like a failure.
 	status, err := c.waitForBarracudaSynthesizerLocks(barracudaLockTimeout, barracudaLockPollInterval)
 	if err != nil {
 		return nil, fmt.Errorf("verify sweep configuration: %w", err)
@@ -309,8 +310,8 @@ func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
 			Detail: fmt.Sprintf("customer CW/sweep control requires a Barracuda device (got %q)", status.GetBoardType())}
 	}
 	// Prototype behavior: remove attenuation before retuning so RF remains
-	// observable during lock acquisition and after a failed Apply. Production
-	// safety behavior should restore maximum attenuation here.
+	// observable during lock acquisition and after a failed Apply. A lock
+	// failure deliberately does not mute the DSA.
 	if err := c.SetDsaAttenuation(0); err != nil {
 		return fmt.Errorf("remove attenuation before reconfiguration: %w", err)
 	}
@@ -324,8 +325,9 @@ func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
 	}
 	if externalClock && (!clock.GetReferenceValid() || !clock.GetReferenceSelected() ||
 		!clock.GetDpllFrequencyLocked() || !clock.GetDpllPhaseLocked()) {
-		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
-			Detail: "external reference was selected but is not valid and fully locked; output remains at 0 dB attenuation (prototype mode)"}
+		if err := c.waitForBarracudaExternalReference(barracudaLockTimeout, barracudaLockPollInterval); err != nil {
+			return err
+		}
 	}
 	if err := c.SetLoFrequency(BarracudaFixedLOMHz); err != nil {
 		return fmt.Errorf("configure internal frequency plan: %w", err)
@@ -336,6 +338,41 @@ func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
 		return fmt.Errorf("configure calibrated output level: %w", err)
 	}
 	return nil
+}
+
+// The clock-source response is an acquisition snapshot. Poll live diagnostics
+// without repeatedly selecting the clock source or reprogramming either PLL.
+func (c *Client) waitForBarracudaExternalReference(timeout, pollInterval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		status, err := c.GetStatus()
+		if err != nil {
+			return fmt.Errorf("verify external reference: %w", err)
+		}
+		details := status.GetBarracuda()
+		if details == nil {
+			return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_UNSUPPORTED,
+				Detail: "firmware does not provide external reference diagnostics; output remains at 0 dB attenuation (prototype mode)"}
+		}
+		// Firmware uses 0xff for a failed register read; it must never be
+		// mistaken for asserted valid/lock bits.
+		valid, selected, locked := details.GetLmkRefValid(), details.GetLmkRefsel(), details.GetLmkDpllLock()
+		if status.GetClockSourceExternal() && valid != 0xff && selected != 0xff && locked != 0xff &&
+			valid&0x04 != 0 && selected&0x03 == 0x01 && locked&0x06 == 0x06 {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
+				Detail: "external reference was selected but is not valid and fully locked before timeout; output remains at 0 dB attenuation (prototype mode)"}
+		}
+		delay := pollInterval
+		if remaining := time.Until(deadline); delay > remaining {
+			delay = remaining
+		}
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+	}
 }
 
 func verifyBarracudaLO(status *pb.GetStatusResponse) error {

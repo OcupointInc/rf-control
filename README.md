@@ -3,6 +3,8 @@
 Ocupoint RF Control discovers, configures, and monitors supported Ocupoint
 hardware over USB-C or Ethernet. Download a ready-to-run file from GitHub.
 
+For Python automation, see the [Python interface and Ethernet CW/sweep example](python/README.md).
+
 ## 1. Download the application
 
 Open the **[latest rf-control release](https://github.com/OcupointInc/rf-control/releases/tag/latest)**

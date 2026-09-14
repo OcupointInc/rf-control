@@ -465,6 +465,9 @@ function bindEvents(): void {
     readControlInputs();
     void applyRFControl();
   });
+  // Preserve pending RF edits through asynchronous redraws and navigation.
+  document.querySelector('#rf-form')?.addEventListener('input', readControlInputs);
+  document.querySelector('#airshark-advanced-form')?.addEventListener('input', readAirsharkAdvancedInputs);
   document.querySelector<HTMLFormElement>('#whalepod-form')?.addEventListener('submit', (event) => {
     event.preventDefault();
     readWhalepodInputs();
@@ -811,7 +814,8 @@ function renderBlackCanyonFacts(status: DeviceStatus): string {
 function clearNotice(): void {
   if (!state.notice) return;
   state.notice = '';
-  render();
+  // Avoid interrupting typing or an Apply click when a notice expires.
+  document.querySelector('.toast')?.remove();
 }
 
 async function discoverWithTimeout(): Promise<DiscoveryResult> {
@@ -940,6 +944,8 @@ async function applyRFControl(): Promise<void> {
   if (result) {
     state.snapshot = result;
     state.control.rfEnabled = result.status.rfEnabled;
+  } else {
+    await refreshStatus(false);
   }
   render();
 }

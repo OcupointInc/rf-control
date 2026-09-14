@@ -116,8 +116,9 @@ Reference locked    : true
 Signal locked       : true
 ```
 
-The external-clock command will not unmute RF unless the 10 MHz reference is
-valid, selected, and locked. If the check fails, correct the reference source
+The external-clock command succeeds only when the 10 MHz reference is
+valid, selected, and locked. During configuration and on lock failure,
+attenuation stays at 0 dB; RF is not muted. If the check fails, correct the reference source
 or cabling and rerun the complete command. To return to the onboard clock, run
 the CW or sweep command with `--clock internal`.
 
@@ -195,5 +196,7 @@ the nominal output by one dB from the approximately -25 dBm baseline:
 - Run `status` using the same `--usb` or `--ip` connection.
 - For an external-clock error, confirm the source is enabled and supplying a
   10 MHz reference, then rerun the complete CW or sweep command.
-- A failed RF setup leaves the output at maximum attenuation for safety.
-  Correct the reported issue and run the complete command again.
+- A lock failure leaves attenuation at 0 dB and reports which lock failed.
+  It does not force maximum attenuation. Correct the reported issue and run
+  the complete command again. A reported lock failure does not establish that
+  the unit has no RF output.

@@ -608,6 +608,7 @@ func (s *Service) ConfigureCW(request CWRequest) (DeviceSnapshot, error) {
 		IFFrequencyMHz: request.FrequencyMHz, AttenuationDB: request.Attenuation, ExternalClock: external,
 	})
 	if err != nil {
+		s.invalidateRFConfigurationLocked()
 		return DeviceSnapshot{}, err
 	}
 	s.active.lastMode = "cw"
@@ -640,6 +641,7 @@ func (s *Service) ConfigureSweep(request SweepRequest) (DeviceSnapshot, error) {
 		AttenuationDB: request.Attenuation, ExternalClock: external,
 	})
 	if err != nil {
+		s.invalidateRFConfigurationLocked()
 		return DeviceSnapshot{}, err
 	}
 	s.active.lastMode = "sweep"
@@ -1314,3 +1316,13 @@ func macString(value []byte) string {
 }
 
 func floatPointer(value float64) *float64 { return &value }
+
+// A failed Apply may already have changed attenuation and frequency. Do not
+// let the previous successful request override live telemetry after that.
+func (s *Service) invalidateRFConfigurationLocked() {
+	s.active.lastMode = ""
+	s.active.lastStart = 0
+	s.active.lastStop = 0
+	s.active.lastTime = ""
+	s.active.lastAtt = nil
+}

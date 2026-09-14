@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -18,6 +19,7 @@ import (
 )
 
 type fakeDevice struct {
+	configureErr   error
 	config         *pb.GetConfigResponse
 	status         *pb.GetStatusResponse
 	saved          *pb.SaveConfigRequest
@@ -60,6 +62,9 @@ func (f *fakeDevice) SaveConfig(request *pb.SaveConfigRequest) error {
 }
 func (f *fakeDevice) ConfigureBarracudaCW(config client.BarracudaCWConfig) (*client.BarracudaConfiguration, error) {
 	f.cw = &config
+	if f.configureErr != nil {
+		return nil, f.configureErr
+	}
 	f.status.PllLocked = true
 	f.status.ClockSourceExternal = config.ExternalClock
 	f.status.RefLocked = config.ExternalClock
@@ -73,6 +78,9 @@ func (f *fakeDevice) ConfigureBarracudaCW(config client.BarracudaCWConfig) (*cli
 }
 func (f *fakeDevice) ConfigureBarracudaSweep(config client.BarracudaSweepConfig) (*client.BarracudaConfiguration, error) {
 	f.sweep = &config
+	if f.configureErr != nil {
+		return nil, f.configureErr
+	}
 	return &client.BarracudaConfiguration{
 		Mode: "sweep", StartIFMHz: config.StartIFMHz, StopIFMHz: config.StopIFMHz,
 		SweepTime: config.SweepTime, AttenuationDB: config.AttenuationDB, SignalLocked: true,
@@ -1048,5 +1056,42 @@ func TestStatusRequestsAreSerialized(t *testing.T) {
 	wait.Wait()
 	if got := fake.statusMax.Load(); got != 1 {
 		t.Fatalf("maximum concurrent status calls = %d, want 1", got)
+	}
+}
+
+func TestFailedApplyDoesNotMaskLiveStatusWithPreviousConfiguration(t *testing.T) {
+	for _, mode := range []string{"cw", "sweep"} {
+		t.Run(mode, func(t *testing.T) {
+			fake := barracudaFake()
+			service := serviceWithFake(fake)
+			if _, err := service.Connect(Endpoint{Kind: "usb", Address: "/dev/ttyACM1"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.ConfigureCW(CWRequest{FrequencyMHz: 900, Attenuation: 31.75, Clock: "internal", RFEnabled: true}); err != nil {
+				t.Fatal(err)
+			}
+			// Model a subsequent Apply that retunes at 0 dB, then times out on lock.
+			fake.status.AttenuationDb = 0
+			fake.status.PllLocked = false
+			fake.status.Barracuda.AdfState = &pb.Adf4159State{FrequencyMhz: client.BarracudaFixedLOMHz + 400}
+			fake.configureErr = errors.New("ADF4159 did not lock")
+			var err error
+			if mode == "cw" {
+				_, err = service.ConfigureCW(CWRequest{FrequencyMHz: 400, Attenuation: 6, Clock: "internal", RFEnabled: true})
+			} else {
+				_, err = service.ConfigureSweep(SweepRequest{StartMHz: 400, StopMHz: 900, SweepTime: "1s", Attenuation: 6, Clock: "internal", RFEnabled: true})
+			}
+			if !errors.Is(err, fake.configureErr) {
+				t.Fatalf("Apply error = %v", err)
+			}
+			snapshot, err := service.Status()
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := snapshot.Status
+			if status.AttenuationDB != 0 || status.MaximumAttenuation || status.IFFrequencyMHz != 400 || status.SignalLocked {
+				t.Fatalf("previous Apply masked live status: %+v", status)
+			}
+		})
 	}
 }
