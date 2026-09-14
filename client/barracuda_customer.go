@@ -26,6 +26,8 @@ const (
 // BarracudaCWConfig is the small customer-facing configuration for a CW IF.
 // The RF synthesizer plan is derived internally and is not customer-settable.
 type BarracudaCWConfig struct {
+	// Force defaults to true when nil. Set false to require lock verification.
+	Force          *bool
 	IFFrequencyMHz int32
 	AttenuationDB  float64
 	ExternalClock  bool
@@ -34,6 +36,8 @@ type BarracudaCWConfig struct {
 // BarracudaSweepConfig is the customer-facing configuration for a continuous
 // sawtooth IF sweep. The RF synthesizer plan is derived internally.
 type BarracudaSweepConfig struct {
+	// Force defaults to true when nil. Set false to require lock verification.
+	Force         *bool
 	StartIFMHz    int32
 	StopIFMHz     int32
 	SweepTime     time.Duration
@@ -52,7 +56,9 @@ type BarracudaConfiguration struct {
 	AttenuationDB    float64
 	NominalOutputDBm float64
 	ExternalClock    bool
-	SignalLocked     bool
+	// SignalLocked is meaningful only when LockVerified is true.
+	SignalLocked bool
+	LockVerified bool
 }
 
 // SetBarracudaClockSource selects the Barracuda LMK clock source and returns
@@ -158,7 +164,8 @@ func (c *Client) RunEqualizedSweep(req *pb.RunEqualizedSweepRequest) (*pb.RunEqu
 
 // ConfigureBarracudaCW applies the complete customer CW plan. During prototype
 // development it sets the DSA to 0 dB during reconfiguration so RF remains
-// observable, then applies the requested attenuation after both PLLs lock.
+// observable, then applies requested attenuation without requiring lock.
+// Set cfg.Force to false to enable bounded lock/readback verification.
 func (c *Client) ConfigureBarracudaCW(cfg BarracudaCWConfig) (*BarracudaConfiguration, error) {
 	quarterDB, err := validateBarracudaAttenuation(cfg.AttenuationDB)
 	if err != nil {
@@ -167,21 +174,25 @@ func (c *Client) ConfigureBarracudaCW(cfg BarracudaCWConfig) (*BarracudaConfigur
 	if err := validateBarracudaIFFrequency("CW IF frequency", cfg.IFFrequencyMHz); err != nil {
 		return nil, err
 	}
-	if err := c.prepareBarracudaCustomerPlan(cfg.ExternalClock); err != nil {
+	force := cfg.Force == nil || *cfg.Force
+	if err := c.prepareBarracudaCustomerPlan(cfg.ExternalClock, force); err != nil {
 		return nil, err
 	}
 	if err := c.SetPllFrequency(barracudaRFFrequencyMHz(cfg.IFFrequencyMHz)); err != nil {
 		return nil, fmt.Errorf("set CW IF frequency: %w", err)
 	}
-	status, err := c.waitForBarracudaSynthesizerLocks(barracudaLockTimeout, barracudaLockPollInterval)
-	if err != nil {
-		return nil, fmt.Errorf("verify CW configuration: %w", err)
-	}
-	if err := barracudaSynthesizerLockError(status); err != nil {
-		return nil, err
-	}
-	if err := verifyBarracudaLO(status); err != nil {
-		return nil, err
+	var status *pb.GetStatusResponse
+	if !force {
+		status, err = c.waitForBarracudaSynthesizerLocks(barracudaLockTimeout, barracudaLockPollInterval)
+		if err != nil {
+			return nil, fmt.Errorf("verify CW configuration: %w", err)
+		}
+		if err := barracudaSynthesizerLockError(status); err != nil {
+			return nil, err
+		}
+		if err := verifyBarracudaLO(status); err != nil {
+			return nil, err
+		}
 	}
 	if err := c.SetDsaAttenuation(quarterDB); err != nil {
 		return nil, fmt.Errorf("set attenuation: %w", err)
@@ -190,7 +201,7 @@ func (c *Client) ConfigureBarracudaCW(cfg BarracudaCWConfig) (*BarracudaConfigur
 		Mode: "cw", StartIFMHz: cfg.IFFrequencyMHz, StopIFMHz: cfg.IFFrequencyMHz,
 		AttenuationDB:    cfg.AttenuationDB,
 		NominalOutputDBm: BarracudaNominalOutputDBm - cfg.AttenuationDB,
-		ExternalClock:    cfg.ExternalClock, SignalLocked: status.GetPllLocked(),
+		ExternalClock:    cfg.ExternalClock, SignalLocked: status.GetPllLocked(), LockVerified: !force,
 	}, nil
 }
 
@@ -216,7 +227,8 @@ func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaCo
 	if err != nil {
 		return nil, err
 	}
-	if err := c.prepareBarracudaCustomerPlan(cfg.ExternalClock); err != nil {
+	force := cfg.Force == nil || *cfg.Force
+	if err := c.prepareBarracudaCustomerPlan(cfg.ExternalClock, force); err != nil {
 		return nil, err
 	}
 	_, err = c.SetChirp(
@@ -227,17 +239,20 @@ func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaCo
 		return nil, fmt.Errorf("set sweep: %w", err)
 	}
 	// SetChirp's lock bit is sampled by the firmware immediately after it
-	// programs the ADF4159. Poll live status instead so a normal acquisition
-	// delay does not make a valid configuration look like a failure.
-	status, err := c.waitForBarracudaSynthesizerLocks(barracudaLockTimeout, barracudaLockPollInterval)
-	if err != nil {
-		return nil, fmt.Errorf("verify sweep configuration: %w", err)
-	}
-	if err := barracudaSynthesizerLockError(status); err != nil {
-		return nil, err
-	}
-	if err := verifyBarracudaLO(status); err != nil {
-		return nil, err
+	// programs the ADF4159. Force mode ignores that snapshot; when verification
+	// is requested, poll live status to allow for normal acquisition delay.
+	var status *pb.GetStatusResponse
+	if !force {
+		status, err = c.waitForBarracudaSynthesizerLocks(barracudaLockTimeout, barracudaLockPollInterval)
+		if err != nil {
+			return nil, fmt.Errorf("verify sweep configuration: %w", err)
+		}
+		if err := barracudaSynthesizerLockError(status); err != nil {
+			return nil, err
+		}
+		if err := verifyBarracudaLO(status); err != nil {
+			return nil, err
+		}
 	}
 	if err := c.SetDsaAttenuation(quarterDB); err != nil {
 		return nil, fmt.Errorf("set attenuation: %w", err)
@@ -246,7 +261,7 @@ func (c *Client) ConfigureBarracudaSweep(cfg BarracudaSweepConfig) (*BarracudaCo
 		Mode: "sweep", StartIFMHz: cfg.StartIFMHz, StopIFMHz: cfg.StopIFMHz, SweepTime: cfg.SweepTime,
 		AttenuationDB:    cfg.AttenuationDB,
 		NominalOutputDBm: BarracudaNominalOutputDBm - cfg.AttenuationDB,
-		ExternalClock:    cfg.ExternalClock, SignalLocked: status.GetPllLocked(),
+		ExternalClock:    cfg.ExternalClock, SignalLocked: status.GetPllLocked(), LockVerified: !force,
 	}, nil
 }
 
@@ -300,7 +315,7 @@ func barracudaSynthesizerLockError(status *pb.GetStatusResponse) error {
 	return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: detail}
 }
 
-func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
+func (c *Client) prepareBarracudaCustomerPlan(externalClock, force bool) error {
 	status, err := c.GetStatus()
 	if err != nil {
 		return fmt.Errorf("identify device: %w", err)
@@ -323,7 +338,7 @@ func (c *Client) prepareBarracudaCustomerPlan(externalClock bool) error {
 		return &DeviceError{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR,
 			Detail: "clock-source readback did not match the requested source; output remains at 0 dB attenuation (prototype mode)"}
 	}
-	if externalClock && (!clock.GetReferenceValid() || !clock.GetReferenceSelected() ||
+	if !force && externalClock && (!clock.GetReferenceValid() || !clock.GetReferenceSelected() ||
 		!clock.GetDpllFrequencyLocked() || !clock.GetDpllPhaseLocked()) {
 		if err := c.waitForBarracudaExternalReference(barracudaLockTimeout, barracudaLockPollInterval); err != nil {
 			return err

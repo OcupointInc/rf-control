@@ -263,7 +263,11 @@ func printCustomerConfiguration(result *client.BarracudaConfiguration) {
 	fmt.Printf("Clock: %s\n", clock)
 	fmt.Printf("Attenuation: %.2f dB\n", result.AttenuationDB)
 	fmt.Printf("Nominal output: %.2f dBm\n", result.NominalOutputDBm)
-	fmt.Printf("Signal locked: %v\n", result.SignalLocked)
+	if result.LockVerified {
+		fmt.Printf("Signal locked: %v\n", result.SignalLocked)
+	} else {
+		fmt.Println("Signal lock: not checked (force mode)")
+	}
 }
 
 func printCustomerCWUsage() {

@@ -227,3 +227,12 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	return string(out)
 }
+
+func TestForceConfigurationDoesNotReportUncheckedLockAsFailure(t *testing.T) {
+	out := captureStdout(t, func() {
+		printCustomerConfiguration(&client.BarracudaConfiguration{Mode: "cw", StartIFMHz: 400})
+	})
+	if !strings.Contains(out, "Signal lock: not checked (force mode)") || strings.Contains(out, "Signal locked: false") {
+		t.Fatalf("force output = %s", out)
+	}
+}

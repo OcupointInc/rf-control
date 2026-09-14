@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestConfigureBarracudaCWSequence(t *testing.T) {
 		barracudaStatus(true),
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
 	}}
-	result, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{
+	result, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{Force: testForce(false),
 		IFFrequencyMHz: 400, AttenuationDB: 6.25,
 	})
 	if err != nil {
@@ -94,7 +95,7 @@ func TestConfigureBarracudaCWSequence(t *testing.T) {
 		t.Errorf("final attenuation = %d quarter-dB, want 25", got)
 	}
 	if result.Mode != "cw" || result.StartIFMHz != 400 || result.StopIFMHz != 400 ||
-		result.NominalOutputDBm != -31.25 || !result.SignalLocked {
+		result.NominalOutputDBm != -31.25 || !result.SignalLocked || !result.LockVerified {
 		t.Errorf("result = %+v", result)
 	}
 }
@@ -115,7 +116,7 @@ func TestConfigureBarracudaSweepSequence(t *testing.T) {
 		barracudaStatus(true),
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
 	}}
-	result, err := New(tx).ConfigureBarracudaSweep(BarracudaSweepConfig{
+	result, err := New(tx).ConfigureBarracudaSweep(BarracudaSweepConfig{Force: testForce(false),
 		StartIFMHz: 50, StopIFMHz: 1500, SweepTime: 10 * time.Second,
 		AttenuationDB: 0, ExternalClock: true,
 	})
@@ -152,7 +153,7 @@ func TestConfigureBarracudaCWRetriesDelayedLock(t *testing.T) {
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
 	}}
 
-	result, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{
+	result, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{Force: testForce(false),
 		IFFrequencyMHz: 400, AttenuationDB: 6.25,
 	})
 	if err != nil {
@@ -232,7 +233,7 @@ func TestConfigureBarracudaExternalClockFailureLeavesUnattenuated(t *testing.T) 
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
 		{MessageId: &pb.Packet_SetClockSourceResponse{SetClockSourceResponse: &pb.SetClockSourceResponse{External: true}}},
 	}}
-	_, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{
+	_, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{Force: testForce(false),
 		IFFrequencyMHz: 400, ExternalClock: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "not valid and fully locked") {
@@ -260,7 +261,7 @@ func TestConfigureBarracudaPowerMismatchLeavesUnattenuated(t *testing.T) {
 		{MessageId: &pb.Packet_SetPllFrequencyResponse{SetPllFrequencyResponse: &pb.SetPllFrequencyResponse{}}},
 		badStatus,
 	}}
-	_, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400})
+	_, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{Force: testForce(false), IFFrequencyMHz: 400})
 	if err == nil || !strings.Contains(err.Error(), "calibrated customer setting") {
 		t.Fatalf("error = %v, want calibrated-power failure", err)
 	}
@@ -278,19 +279,19 @@ func TestConfigureBarracudaRejectsInvalidInputBeforeTransport(t *testing.T) {
 		call func(*Client) error
 	}{
 		{"CW range", func(c *Client) error {
-			_, err := c.ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 49})
+			_, err := c.ConfigureBarracudaCW(BarracudaCWConfig{Force: testForce(false), IFFrequencyMHz: 49})
 			return err
 		}},
 		{"attenuation step", func(c *Client) error {
-			_, err := c.ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400, AttenuationDB: 0.1})
+			_, err := c.ConfigureBarracudaCW(BarracudaCWConfig{Force: testForce(false), IFFrequencyMHz: 400, AttenuationDB: 0.1})
 			return err
 		}},
 		{"sweep order", func(c *Client) error {
-			_, err := c.ConfigureBarracudaSweep(BarracudaSweepConfig{StartIFMHz: 1000, StopIFMHz: 500, SweepTime: time.Second})
+			_, err := c.ConfigureBarracudaSweep(BarracudaSweepConfig{Force: testForce(false), StartIFMHz: 1000, StopIFMHz: 500, SweepTime: time.Second})
 			return err
 		}},
 		{"sweep resolution", func(c *Client) error {
-			_, err := c.ConfigureBarracudaSweep(BarracudaSweepConfig{StartIFMHz: 50, StopIFMHz: 1500, SweepTime: time.Nanosecond})
+			_, err := c.ConfigureBarracudaSweep(BarracudaSweepConfig{Force: testForce(false), StartIFMHz: 50, StopIFMHz: 1500, SweepTime: time.Nanosecond})
 			return err
 		}},
 	}
@@ -331,9 +332,9 @@ func TestConfigureBarracudaLockTimeoutLeavesUnattenuated(t *testing.T) {
 				var result *BarracudaConfiguration
 				var err error
 				if mode == "cw" {
-					result, err = c.ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400, AttenuationDB: 6.25})
+					result, err = c.ConfigureBarracudaCW(BarracudaCWConfig{Force: testForce(false), IFFrequencyMHz: 400, AttenuationDB: 6.25})
 				} else {
-					result, err = c.ConfigureBarracudaSweep(BarracudaSweepConfig{StartIFMHz: 50, StopIFMHz: 1500, SweepTime: time.Second, AttenuationDB: 6.25})
+					result, err = c.ConfigureBarracudaSweep(BarracudaSweepConfig{Force: testForce(false), StartIFMHz: 50, StopIFMHz: 1500, SweepTime: time.Second, AttenuationDB: 6.25})
 				}
 				var deviceErr *DeviceError
 				if result != nil || !errors.As(err, &deviceErr) || !strings.Contains(err.Error(), "did not lock before timeout") {
@@ -375,7 +376,7 @@ func TestConfigureBarracudaWaitsForExternalReference(t *testing.T) {
 		ready,
 		{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
 	}}
-	result, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400, AttenuationDB: 6.25, ExternalClock: true})
+	result, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{Force: testForce(false), IFFrequencyMHz: 400, AttenuationDB: 6.25, ExternalClock: true})
 	if err != nil || !result.SignalLocked {
 		t.Fatalf("result = %+v, error = %v", result, err)
 	}
@@ -398,5 +399,80 @@ func TestWaitForBarracudaExternalReferenceRejectsReadFailure(t *testing.T) {
 	err := New(&scriptedTransport{replies: []*pb.Packet{status}}).waitForBarracudaExternalReference(0, 0)
 	if err == nil || !strings.Contains(err.Error(), "before timeout") {
 		t.Fatalf("error = %v, want external-reference timeout", err)
+	}
+}
+
+func testForce(value bool) *bool { return &value }
+
+func TestBarracudaForceDefaultsToTuningWithoutLockVerification(t *testing.T) {
+	for _, mode := range []string{"cw", "sweep"} {
+		for _, external := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/external=%v", mode, external), func(t *testing.T) {
+				// Only identity is available. Neither PLL nor the external reference is locked.
+				tuneReply := &pb.Packet{MessageId: &pb.Packet_SetPllFrequencyResponse{SetPllFrequencyResponse: &pb.SetPllFrequencyResponse{}}}
+				if mode == "sweep" {
+					tuneReply = &pb.Packet{MessageId: &pb.Packet_SetChirpResponse{SetChirpResponse: &pb.SetChirpResponse{Locked: false}}}
+				}
+				tx := &scriptedTransport{replies: []*pb.Packet{
+					{MessageId: &pb.Packet_GetStatusResponse{GetStatusResponse: &pb.GetStatusResponse{BoardType: "barracuda"}}},
+					{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
+					{MessageId: &pb.Packet_SetClockSourceResponse{SetClockSourceResponse: &pb.SetClockSourceResponse{External: external}}},
+					{MessageId: &pb.Packet_SetLoFrequencyResponse{SetLoFrequencyResponse: &pb.SetLoFrequencyResponse{}}},
+					{MessageId: &pb.Packet_SetLmxOutputPowerResponse{SetLmxOutputPowerResponse: &pb.SetLmxOutputPowerResponse{}}},
+					tuneReply,
+					{MessageId: &pb.Packet_SetDsaAttenuationResponse{SetDsaAttenuationResponse: &pb.SetDsaAttenuationResponse{}}},
+				}}
+				c := New(tx)
+				var result *BarracudaConfiguration
+				var err error
+				if mode == "cw" {
+					result, err = c.ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400, AttenuationDB: 6.25, ExternalClock: external})
+				} else {
+					result, err = c.ConfigureBarracudaSweep(BarracudaSweepConfig{StartIFMHz: 50, StopIFMHz: 1500, SweepTime: time.Second, AttenuationDB: 6.25, ExternalClock: external})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.LockVerified || result.SignalLocked || result.AttenuationDB != 6.25 {
+					t.Fatalf("force result = %+v", result)
+				}
+				if len(tx.sent) != 7 {
+					t.Fatalf("sent %d requests, want 7 without lock polls", len(tx.sent))
+				}
+				if tx.sent[3].GetSetLoFrequencyRequest().GetFrequencyMhz() != BarracudaFixedLOMHz ||
+					tx.sent[4].GetSetLmxOutputPowerRequest().GetPowerCode() != BarracudaCalibratedLMXPowerCode {
+					t.Fatal("force mode skipped the frequency/power plan")
+				}
+				if mode == "cw" && tx.sent[5].GetSetPllFrequencyRequest().GetFrequencyMhz() != 10000 {
+					t.Fatal("CW not tuned")
+				}
+				if mode == "sweep" && !tx.sent[5].GetSetChirpRequest().GetEnabled() {
+					t.Fatal("sweep not enabled")
+				}
+				if tx.sent[1].GetSetDsaAttenuationRequest().GetQuarterDb() != 0 ||
+					tx.sent[6].GetSetDsaAttenuationRequest().GetQuarterDb() != 25 {
+					t.Fatal("force mode must apply requested attenuation without automatic maximum attenuation")
+				}
+			})
+		}
+	}
+}
+
+func TestBarracudaDefaultForceStillRejectsInvalidInputAndDeviceErrors(t *testing.T) {
+	tx := &scriptedTransport{}
+	if _, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 1}); err == nil || len(tx.sent) != 0 {
+		t.Fatal("invalid force request reached transport")
+	}
+	for _, response := range []*pb.Packet{
+		{MessageId: &pb.Packet_GetStatusResponse{GetStatusResponse: &pb.GetStatusResponse{BoardType: "straps"}}},
+		{MessageId: &pb.Packet_ErrorResponse{ErrorResponse: &pb.ErrorResponse{Code: pb.ErrorCode_ERROR_CODE_HARDWARE_ERROR, Detail: "device failure"}}},
+	} {
+		tx := &scriptedTransport{replies: []*pb.Packet{response}}
+		if _, err := New(tx).ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400}); err == nil || len(tx.sent) != 1 {
+			t.Fatal("force mode ignored identity/device error")
+		}
+	}
+	if _, err := New(&scriptedTransport{}).ConfigureBarracudaCW(BarracudaCWConfig{IFFrequencyMHz: 400}); err == nil {
+		t.Fatal("force mode ignored transport error")
 	}
 }

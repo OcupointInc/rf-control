@@ -89,11 +89,11 @@ switches, or other settings appropriate to the connected system. Where a
 setting is pending, changing it in the GUI does not affect the hardware until
 **Apply** is selected.
 
-For prototype Barracuda systems, Apply holds the DSA at 0 dB attenuation while
-waiting up to two seconds for both the ADF4159 and LMX2595 locks. The requested
-attenuation is applied only after both locks are confirmed. If either lock
-fails, the GUI identifies the failed synthesizer and the output remains at 0 dB
-attenuation (nominal maximum output).
+Barracuda Apply uses force mode by default: it programs the requested frequency
+and attenuation without waiting for the reference or synthesizers to lock.
+Lock indicators remain live diagnostics; an unlocked indication does not block
+Apply or automatically force maximum attenuation. Invalid settings and device
+or connection errors still report failures. There is no GUI force-mode toggle.
 
 ## 4. Set the Ethernet address
 

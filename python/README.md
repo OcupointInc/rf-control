@@ -45,7 +45,7 @@ to whole microseconds, from 0.000001 to 4294.967295 seconds.
 `external_clock=True` selects the external 10 MHz reference; the default is internal. The nominal output estimate is −25 dBm minus
 attenuation, using LMX power code 50; it is not a live power measurement.
 
-With `force=False`, the helpers follow the Go/GUI prototype behavior: set **0 dB attenuation before
+With `force=False`, the helpers use the same optional lock verification as Go: set **0 dB attenuation before
 retuning**, allow an external reference and both synthesizers up to two seconds
 each to settle, and apply requested attenuation only after lock and LO/power
 readback verification. A lock failure raises `DeviceError` and leaves attenuation
